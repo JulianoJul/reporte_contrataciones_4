@@ -13,6 +13,7 @@ pub const MIN_FK_COUNT_FOR_OPTIMIZATION: usize = 3;
 pub const DEFAULT_PENDING_PATTERN: &str = "PEND";
 pub const DEFAULT_SIGNED_PATTERN: &str = "FIRM";
 pub const FILTRO_TODOS: &str = "__todos__";
+pub const DEFAULT_PAGE_SIZE: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct AnalyseConfig {

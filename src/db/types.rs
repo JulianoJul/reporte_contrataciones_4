@@ -107,7 +107,7 @@ impl Default for DashboardData {
             total_general: 0,
             total_matching: 0,
             current_page: 1,
-            page_size: 100,
+            page_size: super::constants::DEFAULT_PAGE_SIZE,
             por_grupo: HashMap::new(),
             grupo_actual: String::new(),
             tabla: vec![],

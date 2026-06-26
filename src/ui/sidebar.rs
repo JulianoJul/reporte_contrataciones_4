@@ -2,6 +2,7 @@ use eframe::egui::{self, Context, Margin, Rounding, Stroke};
 use crate::db::FiltroValor;
 use crate::db::constants::FILTRO_TODOS;
 use crate::ui::theme::C_BG;
+use crate::ui::widgets::{date_picker_widget, hoy_button};
 
 pub fn ui_sidebar(app: &mut crate::app::App, ctx: &Context) {
     egui::SidePanel::left("sidebar")
@@ -71,13 +72,15 @@ pub fn ui_sidebar(app: &mut crate::app::App, ctx: &Context) {
                                 ui.horizontal(|ui| {
                                     ui.label("Desde:");
                                     let prev = desde.clone();
-                                    ui.add(egui::TextEdit::singleline(desde).hint_text("DD/MM/AAAA"));
+                                    date_picker_widget(ui, desde, "Desde", &format!("cal_{}", nombre), &mut app.needs_refresh);
+                                    hoy_button(ui, desde, &mut app.needs_refresh);
                                     if prev != *desde { app.needs_refresh = true; }
                                 });
                                 ui.horizontal(|ui| {
                                     ui.label("Hasta:");
                                     let prev = hasta.clone();
-                                    ui.add(egui::TextEdit::singleline(hasta).hint_text("DD/MM/AAAA"));
+                                    date_picker_widget(ui, hasta, "Hasta", &format!("cal_{}_hasta", nombre), &mut app.needs_refresh);
+                                    hoy_button(ui, hasta, &mut app.needs_refresh);
                                     if prev != *hasta { app.needs_refresh = true; }
                                 });
                             }
