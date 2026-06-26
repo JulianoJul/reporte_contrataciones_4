@@ -123,14 +123,14 @@ pub fn dashboard(
     };
 
     let count_sql = format!("SELECT COUNT(*) {from_clause} {where_sql}");
-    let total_general: i64 = conn.query_row(&count_sql, params_refs.as_slice(), |row| row.get(0)).unwrap_or(0);
+    let total_general: i64 = conn.query_row(&count_sql, params_refs.as_slice(), |row| row.get(0))?;
     let total_all_sql = format!("SELECT COUNT(*) {from_clause}");
-    let total_matching: i64 = conn.query_row(&total_all_sql, [], |row| row.get(0)).unwrap_or(0);
+    let total_matching: i64 = conn.query_row(&total_all_sql, [], |row| row.get(0))?;
 
     let pending_pat = pending_pattern.unwrap_or(constants::DEFAULT_PENDING_PATTERN);
     let signed_pat = signed_pattern.unwrap_or(constants::DEFAULT_SIGNED_PATTERN);
-    let pendientes = contar_por_estado(conn, &format!("{from_clause}"), &where_sql, params_refs.as_slice(), status_col, pending_pat, modo);
-    let firmados = contar_por_estado(conn, &format!("{from_clause}"), &where_sql, params_refs.as_slice(), status_col, signed_pat, modo);
+    let pendientes = contar_por_estado(conn, &format!("{from_clause}"), &where_sql, params_refs.as_slice(), status_col, pending_pat, modo)?;
+    let firmados = contar_por_estado(conn, &format!("{from_clause}"), &where_sql, params_refs.as_slice(), status_col, signed_pat, modo)?;
 
     let grupo_actual = group_by.unwrap_or("").to_string();
     let por_grupo = if !grupo_actual.is_empty() && clean_identifier(&grupo_actual) {
@@ -220,13 +220,13 @@ fn contar_por_estado(
     params: &[&dyn ToSql],
     status_col: Option<&str>, pattern: &str,
     modo: Option<&ModoOptimizacion>,
-) -> i64 {
+) -> SqlResult<i64> {
     let col = match status_col {
         Some(c) => c,
-        None => return 0,
+        None => return Ok(0),
     };
     if !clean_identifier(col) {
-        return 0;
+        return Ok(0);
     }
     let p = col_prefix(modo);
     let sc = format!("{}{}", p, safe_ident(col));
@@ -238,5 +238,5 @@ fn contar_por_estado(
 
     let mut local_params: Vec<&dyn ToSql> = params.to_vec();
     local_params.push(&escaped_pattern);
-    conn.query_row(&sql, local_params.as_slice(), |row| row.get::<_, i64>(0)).unwrap_or(0)
+    conn.query_row(&sql, local_params.as_slice(), |row| row.get::<_, i64>(0))
 }

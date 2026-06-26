@@ -2,10 +2,11 @@ use rusqlite::Connection;
 use rusqlite::Result as SqlResult;
 
 use super::types::{SchemaMetadata, FKOptimizada, ModoOptimizacion, FkInfo};
+use super::constants::AnalyseConfig;
 use super::schema::{listar_tablas, encontrar_vista_principal, encontrar_tabla_principal, obtener_columnas, analizar_foreign_keys};
 use super::analysis::{analizar_columna, detectar_dependencias, detectar_columna_nombre};
 
-pub fn explorar(conn: &Connection) -> SqlResult<SchemaMetadata> {
+pub fn explorar(conn: &Connection, ac: &AnalyseConfig) -> SqlResult<SchemaMetadata> {
     let tablas = listar_tablas(conn)?;
     let vista = encontrar_vista_principal(conn)?
         .or_else(|| encontrar_tabla_principal(conn, &tablas))
@@ -28,7 +29,7 @@ pub fn explorar(conn: &Connection) -> SqlResult<SchemaMetadata> {
         if col.pk {
             continue;
         }
-        if let Some(info) = analizar_columna(conn, &vista, col, &fk_pairs)? {
+        if let Some(info) = analizar_columna(conn, &vista, col, &fk_pairs, &ac.fk_id_prefix, &ac.preferred_name_cols)? {
             columnas.push(info);
         }
     }
@@ -51,6 +52,7 @@ pub fn explorar(conn: &Connection) -> SqlResult<SchemaMetadata> {
 pub fn detectar_patron_optimizable(
     conn: &Connection,
     vista: &str,
+    ac: &AnalyseConfig,
 ) -> SqlResult<ModoOptimizacion> {
     let vl = vista.to_lowercase();
 
@@ -68,7 +70,7 @@ pub fn detectar_patron_optimizable(
 
     let prefix = format!("{}.", tabla_base);
     let cat_fks: Vec<&(String, FkInfo)> = fk_pairs.iter()
-        .filter(|(key, fk)| key.starts_with(&prefix) && fk.tabla.to_lowercase().starts_with("cat_"))
+        .filter(|(key, fk)| key.starts_with(&prefix) && fk.tabla.to_lowercase().starts_with(&ac.catalog_prefix))
         .collect();
 
     if cat_fks.len() < 3 {
@@ -78,8 +80,8 @@ pub fn detectar_patron_optimizable(
     let mut fks_optimizadas = Vec::new();
     for (key, fk_info) in &cat_fks {
         let Some(col_id) = key.split('.').last().map(|s| s.to_string()) else { continue };
-        let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla)? else { continue };
-        let nombre_display = col_id.strip_prefix("id_").unwrap_or(&col_id).to_string();
+        let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla, &ac.preferred_name_cols)? else { continue };
+        let nombre_display = col_id.strip_prefix(&ac.fk_id_prefix).unwrap_or(&col_id).to_string();
         let pk_col = super::schema::detectar_pk_columna(conn, &fk_info.tabla)?;
         fks_optimizadas.push(FKOptimizada {
             col_id,

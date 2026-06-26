@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use crate::db::AnalyseConfig;
 
 pub struct Config {
     pub default_db: Option<PathBuf>,
@@ -7,6 +8,7 @@ pub struct Config {
     pub pending_label: String,
     pub signed_pattern: String,
     pub signed_label: String,
+    pub analyse: AnalyseConfig,
 }
 
 impl Config {
@@ -24,6 +26,18 @@ impl Config {
         let signed_label = std::env::var("SIGNED_LABEL")
             .unwrap_or_else(|_| "Firmados".to_string());
 
+        let catalog_prefix = std::env::var("CATALOG_PREFIX")
+            .unwrap_or_else(|_| "cat_".to_string());
+        let fk_id_prefix = std::env::var("FK_ID_PREFIX")
+            .unwrap_or_else(|_| "id_".to_string());
+        let preferred_str = std::env::var("PREFERRED_NAME_COLS")
+            .unwrap_or_else(|_| "nombre,name,descripcion,desc".to_string());
+        let preferred_name_cols: Vec<String> = preferred_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
         Config {
             default_db,
             output_dir,
@@ -31,6 +45,11 @@ impl Config {
             pending_label,
             signed_pattern,
             signed_label,
+            analyse: AnalyseConfig {
+                catalog_prefix,
+                fk_id_prefix,
+                preferred_name_cols,
+            },
         }
     }
 }

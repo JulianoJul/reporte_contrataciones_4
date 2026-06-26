@@ -7,6 +7,7 @@ pub mod dashboard;
 pub mod explorer;
 
 pub use types::*;
+pub use constants::AnalyseConfig;
 pub use explorer::explorar;
 pub use explorer::detectar_patron_optimizable;
 pub use dashboard::dashboard;

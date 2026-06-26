@@ -282,3 +282,31 @@ El código muerto se **conserva** con `#[allow(dead_code)]` — son planned feat
 | — | `Cargo.toml` | Agregados `image`, `pptx`. Evaluados y **conservados** todos los crates. | `chrono`, `open`, `serde`, `rust_xlsxwriter`, `printpdf`, `rfd`, `egui_plot`, `rusqlite` — todos en uso activo |
 
 **Observación**: Se evaluó migrar de `printpdf` a `genpdf`, pero `genpdf` requiere archivos TTF externos (no embebidos), lo que viola "compila a un solo binario". `printpdf` con built-in fonts funciona sin dependencias externas y los 2 bugs de compilación (PdfLayerReference no-Clone, shadowing de `image`) ya están corregidos.
+
+---
+
+## Auditoría y Fixes (Julio 2026)
+
+### Regla: Cero Hardcodeo — Configuración de Detección
+
+Se agregó `AnalyseConfig` en `db/constants.rs` con tres parámetros configurables vía env vars:
+
+| Variable | Default | Uso |
+|---|---|---|
+| `CATALOG_PREFIX` | `cat_` | Prefijo de tablas catálogo para optimización JOIN |
+| `FK_ID_PREFIX` | `id_` | Prefijo de columnas FK para generar nombre display |
+| `PREFERRED_NAME_COLS` | `nombre,name,descripcion,desc` | Columnas preferidas como nombre display en catálogos |
+
+### Fixes Aplicados
+
+| # | Archivo | Cambio | Razón |
+|---|---|---|---|
+| 1 | `db/dashboard.rs` | `unwrap_or(0)` → `?` en `total_general`, `total_matching`, `contar_por_estado` | Errores SQL silenciados impedían debugging |
+| 2 | `db/analysis.rs` | LIKE con interpolación → bound parameters (`?`) en `detectar_columna_estado` | SQL injection potencial |
+| 3 | `db/analysis.rs` | `strip_prefix("id_")` → `config.fk_id_prefix` | Assumption hardcodeada |
+| 4 | `db/analysis.rs` | `["nombre","name","descripcion","desc"]` → `config.preferred_name_cols` | Assumption hardcodeada |
+| 5 | `db/explorer.rs` | `starts_with("cat_")` → `config.catalog_prefix` | Assumption hardcodeada |
+| 6 | `db/explorer.rs` | `strip_prefix("id_")` → `config.fk_id_prefix` | Assumption hardcodeada |
+| 7 | `db/schema.rs` | `"vw_reporte_excel_contrataciones"` eliminado como preferido absoluto; solo heurística | Nombre específico de BD de ejemplo hardcodeado |
+| 8 | `config.rs` | Nuevos campos: `catalog_prefix`, `fk_id_prefix`, `preferred_name_cols` | Soportar los nuevos parámetros vía env |
+| 9 | `app.rs` | Thread `AnalyseConfig` a través de `explorar`, `detectar_patron_optimizable`, `analizar_columna` | Pasar configuración a la capa de detección |

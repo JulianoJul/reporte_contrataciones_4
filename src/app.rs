@@ -72,7 +72,7 @@ impl App {
                 self.conn = Some(conn);
                 let conn = self.conn.as_ref().unwrap();
                 self.tablas_disponibles = listar_tablas_vistas(conn);
-                match db::explorar(conn) {
+                match db::explorar(conn, &self.config.analyse) {
                     Ok(meta) => {
                         self.meta = meta;
                         let vista = self.meta.vista_principal.clone();
@@ -106,7 +106,7 @@ impl App {
             None => return,
         };
         self.vista = tabla.clone();
-        self.modo = db::detectar_patron_optimizable(conn, &tabla)
+        self.modo = db::detectar_patron_optimizable(conn, &tabla, &self.config.analyse)
             .unwrap_or(ModoOptimizacion::Universal);
         let cols_raw = db::schema::obtener_columnas(conn, &tabla).unwrap_or_default();
         let all_tablas = db::schema::listar_tablas(conn).unwrap_or_default();
@@ -114,7 +114,7 @@ impl App {
         let mut columnas = Vec::new();
         for col in &cols_raw {
             if col.pk { continue; }
-            if let Ok(Some(info)) = db::analysis::analizar_columna(conn, &tabla, col, &fk_pairs) {
+            if let Ok(Some(info)) = db::analysis::analizar_columna(conn, &tabla, col, &fk_pairs, &self.config.analyse.fk_id_prefix, &self.config.analyse.preferred_name_cols) {
                 columnas.push(info);
             }
         }

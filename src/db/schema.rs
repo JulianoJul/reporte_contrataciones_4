@@ -30,11 +30,6 @@ pub fn encontrar_vista_principal(conn: &Connection) -> SqlResult<Option<String>>
     let vistas = listar_vistas(conn)?;
 
     for v in &vistas {
-        if v == "vw_reporte_excel_contrataciones" {
-            return Ok(Some(v.clone()));
-        }
-    }
-    for v in &vistas {
         let vl = v.to_lowercase();
         if vl.contains("reporte") || vl.contains("vista") || vl.contains("vw_") {
             return Ok(Some(v.clone()));

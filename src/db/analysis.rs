@@ -1,5 +1,6 @@
 use rusqlite::Connection;
 use rusqlite::Result as SqlResult;
+use rusqlite::types::ToSql;
 
 use super::types::{ColumnaInfo, ColumnaRaw, FkInfo, DependenciaInfo};
 use super::constants;
@@ -11,13 +12,15 @@ pub fn analizar_columna(
     tabla: &str,
     col: &ColumnaRaw,
     fk_pairs: &[(String, FkInfo)],
+    fk_id_prefix: &str,
+    preferred_name_cols: &[String],
 ) -> SqlResult<Option<ColumnaInfo>> {
     let st = safe_ident(tabla);
 
     // Detect FK columns → show catalog display names
     let fk_match = fk_pairs.iter().find(|(k, _)| *k == format!("{}.{}", tabla, col.name));
     if let Some((_, fk_info)) = fk_match {
-        if let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla)? {
+        if let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla, preferred_name_cols)? {
             let tc = safe_ident(&fk_info.tabla);
             let cn = safe_ident(&col_nombre);
             let mut stmt = conn.prepare(&format!(
@@ -30,7 +33,7 @@ pub fn analizar_columna(
                 .map(|v| serde_json::json!(v))
                 .collect();
             let total_dist = valores.len() as u64;
-            let nombre_display = col.name.strip_prefix("id_").unwrap_or(&col.name).to_string();
+            let nombre_display = col.name.strip_prefix(fk_id_prefix).unwrap_or(&col.name).to_string();
             return Ok(Some(ColumnaInfo {
                 nombre: nombre_display,
                 tipo: "categorical_fk".to_string(),
@@ -302,14 +305,15 @@ pub fn detectar_columna_estado(
         let mut pend_ratio = 0.0;
         let mut firm_ratio = 0.0;
         if distinct_count <= 50 {
+            let sql = format!(
+                "SELECT \
+                 CAST(SUM(CASE WHEN UPPER(CAST({sc} AS TEXT)) LIKE ? THEN 1 ELSE 0 END) AS REAL) / MAX(CAST(COUNT(*) AS REAL), 1.0), \
+                 CAST(SUM(CASE WHEN UPPER(CAST({sc} AS TEXT)) LIKE ? THEN 1 ELSE 0 END) AS REAL) / MAX(CAST(COUNT(*) AS REAL), 1.0) \
+                 FROM {st}"
+            );
             let (p, f): (f64, f64) = conn.query_row(
-                &format!(
-                    "SELECT \
-                     CAST(SUM(CASE WHEN UPPER(CAST({sc} AS TEXT)) LIKE '{pend_like}' THEN 1 ELSE 0 END) AS REAL) / MAX(CAST(COUNT(*) AS REAL), 1.0), \
-                     CAST(SUM(CASE WHEN UPPER(CAST({sc} AS TEXT)) LIKE '{firm_like}' THEN 1 ELSE 0 END) AS REAL) / MAX(CAST(COUNT(*) AS REAL), 1.0) \
-                     FROM {st}"
-                ),
-                [],
+                &sql,
+                &[&pend_like as &dyn ToSql, &firm_like as &dyn ToSql],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             ).unwrap_or((0.0, 0.0));
             pend_ratio = p;
@@ -345,15 +349,15 @@ pub fn detectar_columna_estado(
     Ok(best_col)
 }
 
-pub fn detectar_columna_nombre(conn: &Connection, tabla: &str) -> SqlResult<Option<String>> {
+pub fn detectar_columna_nombre(conn: &Connection, tabla: &str, preferred_name_cols: &[String]) -> SqlResult<Option<String>> {
     let st = safe_ident(tabla);
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", st))?;
     let col_names: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(1))?
         .filter_map(|r| r.ok())
         .collect();
-    for preferred in &["nombre", "name", "descripcion", "desc"] {
+    for preferred in preferred_name_cols {
         if col_names.iter().any(|c| c.to_lowercase() == *preferred) {
-            return Ok(Some(preferred.to_string()));
+            return Ok(Some(preferred.clone()));
         }
     }
     for c in &col_names {
