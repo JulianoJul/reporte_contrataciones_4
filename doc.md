@@ -71,11 +71,11 @@ reporte_contrataciones_4/
 │   ├── main.rs           # Entry point, ventana 1400x900
 │   ├── app.rs            # Estado global, UI panels, tema Nord Light
 │   ├── config.rs         # Detección automática de rutas portable
-│   ├── export.rs         # Exportación Excel + PDF
+│   ├── export.rs         # Exportación Excel + PDF + PPTX
 │   ├── redactor.rs       # Plantillas de texto con placeholders
 │   ├── db/               # Layer universal (NO MODIFICAR)
 │   │   ├── mod.rs, types.rs, schema.rs, analysis.rs
-│   │   ├── dashboard.rs, explorer.rs, optimization.rs
+│   │   ├── dashboard.rs, explorer.rs
 │   │   ├── constants.rs, utils.rs
 │   └── ui/               # UI panels + widgets
 │       ├── sidebar.rs    # Panel de filtros laterales
@@ -151,7 +151,9 @@ Ventana flotante para escribir plantillas con placeholders:
 | `open`           | 5       | Abrir carpeta/archivos       |
 | `chrono`         | 0.4     | Timestamps                   |
 | `rust_xlsxwriter`| 0.82    | Exportar Excel               |
-| `printpdf`       | 0.7     | Exportar PDF                 |
+| `printpdf`       | 0.7     | Exportar PDF (imagen embebida)|
+| `image`          | 0.24    | Procesar screenshot > PNG    |
+| `pptx`           | 0.1     | Exportar PPTX                |
 
 ## Makefile
 
@@ -168,6 +170,8 @@ make combine     # concatena todo el código en combined.txt
 1. **doc.md primero**: antes de cualquier implementación o cambio de código, actualizar esta documentación con lo que se planea hacer.
 2. **Makefile siempre**: después de cambios, ejecutar `make build` y `make combine`.
 3. **Sin hardcodeo**: cero assumptions de naming conventions. Toda heurística debe ser configurable.
+4. **Historial de cambios**: cada cambio debe agregarse a la cronología en `doc.md` con fecha, archivo, y razón.
+5. **Código modular**: cada archivo debe tener una única responsabilidad. Si una función crece más de ~80 líneas o un archivo supera ~400 líneas, extraer a un nuevo módulo/archivo.
 
 ---
 
@@ -259,3 +263,22 @@ El código muerto se **conserva** con `#[allow(dead_code)]` — son planned feat
 | 6 | `src/db/optimization.rs` | **Borrado** | Violaba principio "Layer universal (sin modificar)" — la app no debe alterar el schema |
 
 **SQL Parametrizado**: `construir_where` retorna `(String, Vec<Box<dyn ToSql>>)` con placeholders `?`. Los valores se pasan por separado a `rusqlite`. Se eliminó todo escape manual (`replace('\'', "''")`).
+
+---
+
+### Exportación PPTX + Screenshot + Dead Code (Junio 2026) ✓
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 1 | `src/export.rs` | Nueva función `exportar_pdf_with_screenshot` | Exporta dashboard como imagen embebida en PDF (`printpdf::Image::from_dynamic_image`) |
+| 2 | `src/export.rs` | Nueva función `exportar_pptx_with_screenshot` | Exporta dashboard como imagen en presentación PPTX |
+| 3 | `src/app.rs` | Campos `ExportFormat`, `pending_export`, lógica de `ViewportCommand::Screenshot` | Captura screenshot del viewport y lo envía como PNG a export |
+| 4 | `src/app.rs` | Botón PPTX en `ui_top_panel` | Interfaz para exportar PPTX |
+| 5 | `src/export.rs` | Eliminadas `truncate()` y `exportar_pdf()` (table-based) | Reemplazadas por screenshot-based, ya no se usan |
+| 6 | `src/config.rs` | Eliminado campo `project_root` | Nunca se leía externamente, dead code |
+| 7 | `src/db/types.rs` | Eliminados `vista()` method y campo `vista` de `VistaConFKs` | Dead code — nunca se llamaban |
+| 8 | `src/db/explorer.rs` | Eliminado `vista: vista.to_string()` en constructor `VistaConFKs` | Consecuencia de #7 |
+| 9 | `.gitignore` | Creado con ignore de `target/`, `output/`, `combined.txt`, `*.db`, `*.sqlite` | Preparación para GitHub |
+| — | `Cargo.toml` | Agregados `image`, `pptx`. Evaluados y **conservados** todos los crates. | `chrono`, `open`, `serde`, `rust_xlsxwriter`, `printpdf`, `rfd`, `egui_plot`, `rusqlite` — todos en uso activo |
+
+**Observación**: Se evaluó migrar de `printpdf` a `genpdf`, pero `genpdf` requiere archivos TTF externos (no embebidos), lo que viola "compila a un solo binario". `printpdf` con built-in fonts funciona sin dependencias externas y los 2 bugs de compilación (PdfLayerReference no-Clone, shadowing de `image`) ya están corregidos.
