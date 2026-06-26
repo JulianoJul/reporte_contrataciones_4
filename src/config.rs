@@ -46,6 +46,13 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        let view_keywords_str = std::env::var("VIEW_KEYWORDS")
+            .unwrap_or_else(|_| "reporte,excel,vw_,vista".to_string());
+        let view_keywords: Vec<String> = view_keywords_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
 
         Config {
             default_db,
@@ -60,6 +67,7 @@ impl Config {
                 preferred_name_cols,
                 exclude_id_prefix,
                 exclude_name_cols,
+                view_keywords,
             },
         }
     }

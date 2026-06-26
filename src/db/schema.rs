@@ -26,12 +26,12 @@ pub fn listar_vistas(conn: &Connection) -> SqlResult<Vec<String>> {
     Ok(vistas)
 }
 
-pub fn encontrar_vista_principal(conn: &Connection) -> SqlResult<Option<String>> {
+pub fn encontrar_vista_principal(conn: &Connection, view_keywords: &[String]) -> SqlResult<Option<String>> {
     let vistas = listar_vistas(conn)?;
 
     for v in &vistas {
         let vl = v.to_lowercase();
-        if vl.contains("reporte") || vl.contains("vista") || vl.contains("vw_") {
+        if view_keywords.iter().any(|kw| vl.contains(kw.as_str())) {
             return Ok(Some(v.clone()));
         }
     }

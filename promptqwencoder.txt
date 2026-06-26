@@ -30,31 +30,38 @@ Tercera ronda (refactors aplicados):
 - seleccionar_tabla dividido en clear_selection + load_and_analyse_table
 - create_dir_all duplicado extraído a helper ensure_dir
 
+Cuarta ronda (fixes residuales finales):
+- unwrap() en app.rs y dashboard.rs reemplazados por pattern matching
+- Logging en unwrap_or de analysis.rs para trazabilidad de errores
+- view_keywords agregado a AnalyseConfig (VIEW_KEYWORDS env var)
+- "reporte","excel","vw_" literal en schema.rs y explorer.rs ahora configurables
+- MIN_FK_COUNT_FOR_OPTIMIZATION constante en lugar de literal 3
+
 Busca específicamente hallazgos que NO se hayan cubierto, priorizando:
 
 1. Bugs/code smells:
-   - ¿Quedan unwrap/expect/panic sin justificar?
-   - Manejo de errores silencioso (unwrap_or, ok(), etc.)?
-   - Race conditions o lógica asincrónica frágil?
+   - ¿Queda algún unwrap/expect/panic sin justificar?
+   - Manejo de errores silencioso todavía presente?
+   - Lógica frágil o difícil de seguir?
 
 2. Seguridad:
-   - SQL injection ya mitigado (bound params + safe_ident), ¿hay otros vectores?
+   - SQL injection ya mitigado, ¿hay otros vectores?
    - Validación de input del usuario (file dialog, redactor, text_search)
-   - Path traversal en exportación?
+   - Path traversal o permisos en exportación?
 
 3. Refactor:
-   - dashboard() función principal (~130 líneas) — ¿demasiado larga?
-   - ¿Código duplicado entre módulos?
+   - dashboard() función principal (~165 líneas) — ¿demasiado larga?
+   - Código duplicado entre módulos?
    - Funciones con demasiados parámetros?
 
 4. Cero hardcodeo:
-   - ¿Quedan thresholds numéricos sin constante?
+   - ¿Quedan thresholds numéricos sin constante en db/constants.rs?
    - ¿Strings de schema hardcodeados?
    - ¿Assumptions sobre nombres de columnas/tablas?
 
 Archivos principales:
 - src/main.rs — entry point
-- src/app.rs (~478 lines) — estado global, UI panels, tema Nord Light
+- src/app.rs (~490 lines) — estado global, UI panels, tema Nord Light
 - src/config.rs — detección de rutas, env vars para AnalyseConfig
 - src/export.rs — exportación Excel/PDF/PPTX con screenshot
 - src/redactor.rs — plantillas de texto con placeholders

@@ -295,7 +295,8 @@ pub fn detectar_columna_estado(
              WHERE LENGTH(v) <= {}",
             constants::STATUS_SHORT_LENGTH_THRESHOLD
         )) {
-            short_values = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
+            short_values = stmt.query_row([], |row| row.get(0))
+                .unwrap_or_else(|e| { eprintln!("[db/analysis] short_values query failed: {}", e); 0 });
         }
 
 
@@ -318,7 +319,7 @@ pub fn detectar_columna_estado(
                 &sql,
                 &[&pend_like as &dyn ToSql, &firm_like as &dyn ToSql],
                 |row| Ok((row.get(0)?, row.get(1)?)),
-            ).unwrap_or((0.0, 0.0));
+            ).unwrap_or_else(|e| { eprintln!("[db/analysis] status query failed: {}", e); (0.0, 0.0) });
             pend_ratio = p;
             firm_ratio = f;
         }

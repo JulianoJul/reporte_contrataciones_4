@@ -118,7 +118,8 @@ pub fn dashboard(
 
     let from_clause = match modo {
         Some(m) if !m.es_universal() => {
-            let tb = safe_ident(m.tabla_base().unwrap());
+            let Some(base) = m.tabla_base() else { return Ok(DashboardData::default()); };
+            let tb = safe_ident(base);
             let mut joins = Vec::new();
             for fk in m.fks() {
                 let alias = format!("c_{}", fk.col_id);

@@ -2,13 +2,13 @@ use rusqlite::Connection;
 use rusqlite::Result as SqlResult;
 
 use super::types::{SchemaMetadata, FKOptimizada, ModoOptimizacion, FkInfo};
-use super::constants::AnalyseConfig;
+use super::constants::{self, AnalyseConfig};
 use super::schema::{listar_tablas, encontrar_vista_principal, encontrar_tabla_principal, obtener_columnas, analizar_foreign_keys};
 use super::analysis::{analizar_columna, detectar_dependencias, detectar_columna_nombre};
 
 pub fn explorar(conn: &Connection, ac: &AnalyseConfig) -> SqlResult<SchemaMetadata> {
     let tablas = listar_tablas(conn)?;
-    let vista = encontrar_vista_principal(conn)?
+    let vista = encontrar_vista_principal(conn, &ac.view_keywords)?
         .or_else(|| encontrar_tabla_principal(conn, &tablas))
         .unwrap_or_default();
 
@@ -56,9 +56,9 @@ pub fn detectar_patron_optimizable(
 ) -> SqlResult<ModoOptimizacion> {
     let vl = vista.to_lowercase();
 
-    // CRITERIO 1: Si es una vista con "reporte", "excel" o "vw_",
+    // CRITERIO 1: Si es una vista con keywords conocidos,
     // siempre usa modo Universal (ya tiene JOINs resueltos)
-    if vista.is_empty() || vl.contains("reporte") || vl.contains("excel") || vl.contains("vw_") {
+    if vista.is_empty() || ac.view_keywords.iter().any(|kw| vl.contains(kw.as_str())) {
         return Ok(ModoOptimizacion::Universal);
     }
 
@@ -73,7 +73,7 @@ pub fn detectar_patron_optimizable(
         .filter(|(key, fk)| key.starts_with(&prefix) && fk.tabla.to_lowercase().starts_with(&ac.catalog_prefix))
         .collect();
 
-    if cat_fks.len() < 3 {
+    if cat_fks.len() < constants::MIN_FK_COUNT_FOR_OPTIMIZATION {
         return Ok(ModoOptimizacion::Universal);
     }
 

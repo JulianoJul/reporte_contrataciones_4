@@ -70,7 +70,7 @@ impl App {
         match Connection::open(path) {
             Ok(conn) => {
                 self.conn = Some(conn);
-                let conn = self.conn.as_ref().unwrap();
+                let Some(ref conn) = self.conn else { return; };
                 self.tablas_disponibles = listar_tablas_vistas(conn);
                 match db::explorar(conn, &self.config.analyse) {
                     Ok(meta) => {
