@@ -1,0 +1,21 @@
+[package]
+name = "reporte_contrataciones_4"
+version = "0.1.0"
+edition = "2021"
+description = "Reporte de Contrataciones — egui + sqlite"
+
+[dependencies]
+eframe = "0.29"
+egui = "0.29"
+egui_extras = "0.29"
+egui_plot = "0.29"
+rusqlite = { version = "0.34", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+rfd = "0.15"
+open = "5"
+rust_xlsxwriter = "0.82"
+printpdf = { version = "0.7", features = ["embedded_images"] }
+image = "0.24"
+pptx = "0.1.0"

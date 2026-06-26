@@ -1,0 +1,12 @@
+pub const MAX_CATEGORICAL_VALUES: u64 = 50;
+pub const MAX_TEXT_LENGTH_THRESHOLD: f64 = 80.0;
+pub const SAMPLE_SIZE: usize = 1000;
+pub const TABLE_LIMIT: usize = 500;
+pub const PDF_ROW_LIMIT: usize = 200;
+pub const PK_RATIO_THRESHOLD: f64 = 0.8;
+pub const STATUS_THRESHOLD: f64 = 0.01;
+pub const STATUS_COMBINED_THRESHOLD: f64 = 0.5;
+pub const GROUP_BY_LIMIT: u64 = 50;
+pub const DEFAULT_PENDING_PATTERN: &str = "PEND";
+pub const DEFAULT_SIGNED_PATTERN: &str = "FIRM";
+pub const FILTRO_TODOS: &str = "__todos__";
