@@ -91,14 +91,46 @@ impl App {
         }
     }
 
+    fn clear_selection(&mut self) {
+        self.vista.clear();
+        self.meta = SchemaMetadata::default();
+        self.filtros_info.clear();
+        self.filtros.clear();
+        self.data = DashboardData::default();
+        self.status_col = None;
+    }
+
+    fn load_and_analyse_table(&mut self, tabla: &str) {
+        let conn = match self.conn.as_ref() {
+            Some(c) => c,
+            None => return,
+        };
+        let cols_raw = db::schema::obtener_columnas(conn, tabla).unwrap_or_default();
+        let all_tablas = db::schema::listar_tablas(conn).unwrap_or_default();
+        let fk_pairs = db::schema::analizar_foreign_keys(conn, &all_tablas).unwrap_or_default();
+        let mut columnas = Vec::new();
+        for col in &cols_raw {
+            if col.pk { continue; }
+            if let Ok(Some(info)) = db::analysis::analizar_columna(conn, tabla, col, &fk_pairs, &self.config.analyse) {
+                columnas.push(info);
+            }
+        }
+        self.meta = SchemaMetadata {
+            vista_principal: tabla.to_string(),
+            tablas: all_tablas,
+            columnas,
+            dependencias: vec![],
+        };
+        let col_names: Vec<String> = self.meta.columnas.iter().map(|c| c.nombre.clone()).collect();
+        self.status_col = analysis::detectar_columna_estado(conn, tabla, &col_names,
+            &self.config.pending_pattern, &self.config.signed_pattern)
+            .ok().flatten();
+        self.filtros_info = db::extraer_filtros_info(&self.meta);
+    }
+
     fn seleccionar_tabla(&mut self, tabla: String) {
         if tabla.is_empty() {
-            self.vista.clear();
-            self.meta = SchemaMetadata::default();
-            self.filtros_info.clear();
-            self.filtros.clear();
-            self.data = DashboardData::default();
-            self.status_col = None;
+            self.clear_selection();
             return;
         }
         let conn = match self.conn.as_ref() {
@@ -108,27 +140,7 @@ impl App {
         self.vista = tabla.clone();
         self.modo = db::detectar_patron_optimizable(conn, &tabla, &self.config.analyse)
             .unwrap_or(ModoOptimizacion::Universal);
-        let cols_raw = db::schema::obtener_columnas(conn, &tabla).unwrap_or_default();
-        let all_tablas = db::schema::listar_tablas(conn).unwrap_or_default();
-        let fk_pairs = db::schema::analizar_foreign_keys(conn, &all_tablas).unwrap_or_default();
-        let mut columnas = Vec::new();
-        for col in &cols_raw {
-            if col.pk { continue; }
-            if let Ok(Some(info)) = db::analysis::analizar_columna(conn, &tabla, col, &fk_pairs, &self.config.analyse) {
-                columnas.push(info);
-            }
-        }
-        self.meta = SchemaMetadata {
-            vista_principal: tabla.clone(),
-            tablas: all_tablas,
-            columnas,
-            dependencias: vec![],
-        };
-        let col_names: Vec<String> = self.meta.columnas.iter().map(|c| c.nombre.clone()).collect();
-        self.status_col = analysis::detectar_columna_estado(conn, &tabla, &col_names,
-            &self.config.pending_pattern, &self.config.signed_pattern)
-            .ok().flatten();
-        self.filtros_info = db::extraer_filtros_info(&self.meta);
+        self.load_and_analyse_table(&tabla);
         self.init_filtros();
         self.needs_refresh = true;
     }

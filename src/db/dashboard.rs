@@ -12,6 +12,55 @@ fn col_prefix(modo: Option<&ModoOptimizacion>) -> &'static str {
     if modo.map_or(false, |m| !m.es_universal()) { "tb." } else { "" }
 }
 
+fn add_categorical_filter(sc: &str, selected: &str, clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>) {
+    if !selected.is_empty() && selected != constants::FILTRO_TODOS {
+        clauses.push(format!("{} = ?", sc));
+        params.push(Box::new(selected.to_string()));
+    }
+}
+
+fn add_categorical_fk_filter(
+    p: &str, col_original: &str, tabla_catalogo: &str, col_nombre: &str,
+    selected: &str, conn: Option<&Connection>, pk_cache: &mut HashMap<String, String>,
+    clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>,
+) {
+    if !selected.is_empty() && selected != constants::FILTRO_TODOS {
+        let tc = safe_ident(tabla_catalogo);
+        let cn = safe_ident(col_nombre);
+        let co = format!("{}{}", p, safe_ident(col_original));
+        let pk_col = pk_cache.entry(tabla_catalogo.to_string()).or_insert_with(|| {
+            conn.and_then(|c| detectar_pk_columna(c, tabla_catalogo).ok()).unwrap_or_else(|| "rowid".to_string())
+        });
+        clauses.push(format!("{co} = (SELECT {pk_col} FROM {tc} WHERE {cn} = ?)"));
+        params.push(Box::new(selected.to_string()));
+    }
+}
+
+fn add_date_filter(sc: &str, desde: &str, hasta: &str, clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>) {
+    if !desde.is_empty() {
+        clauses.push(format!("{} >= ?", sc));
+        params.push(Box::new(desde.to_string()));
+    }
+    if !hasta.is_empty() {
+        clauses.push(format!("{} <= ?", sc));
+        params.push(Box::new(hasta.to_string()));
+    }
+}
+
+fn add_numeric_filter(sc: &str, min: f64, max: f64, clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>) {
+    clauses.push(format!("{} >= ?", sc));
+    params.push(Box::new(min));
+    clauses.push(format!("{} <= ?", sc));
+    params.push(Box::new(max));
+}
+
+fn add_text_search_filter(sc: &str, query: &str, clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>) {
+    if !query.is_empty() {
+        clauses.push(format!("CAST({} AS TEXT) LIKE ?", sc));
+        params.push(Box::new(format!("%{}%", query)));
+    }
+}
+
 fn construir_where(
     filtros: &HashMap<String, FiltroValor>,
     modo: Option<&ModoOptimizacion>,
@@ -25,48 +74,16 @@ fn construir_where(
     for (col_name, filtro) in filtros {
         let sc = format!("{}{}", p, safe_ident(col_name));
         match filtro {
-            FiltroValor::Categorical { selected } => {
-                if !selected.is_empty() && selected != constants::FILTRO_TODOS {
-                    where_clauses.push(format!("{sc} = ?"));
-                    params.push(Box::new(selected.clone()));
-                }
-            }
-            FiltroValor::CategoricalFK { selected, col_original, tabla_catalogo, col_nombre } => {
-                if !selected.is_empty() && selected != constants::FILTRO_TODOS {
-                    let tc = safe_ident(tabla_catalogo);
-                    let cn = safe_ident(col_nombre);
-                    let co = format!("{}{}", p, safe_ident(col_original));
-                    let pk_col = pk_cache.entry(tabla_catalogo.clone()).or_insert_with(|| {
-                        conn.and_then(|c| detectar_pk_columna(c, tabla_catalogo).ok()).unwrap_or_else(|| "rowid".to_string())
-                    });
-                    where_clauses.push(format!(
-                        "{co} = (SELECT {pk_col} FROM {tc} WHERE {cn} = ?)"
-                    ));
-                    params.push(Box::new(selected.clone()));
-                }
-            }
-            FiltroValor::Date { desde, hasta } => {
-                if !desde.is_empty() {
-                    where_clauses.push(format!("{sc} >= ?"));
-                    params.push(Box::new(desde.clone()));
-                }
-                if !hasta.is_empty() {
-                    where_clauses.push(format!("{sc} <= ?"));
-                    params.push(Box::new(hasta.clone()));
-                }
-            }
-            FiltroValor::Numeric { min, max, .. } => {
-                where_clauses.push(format!("{sc} >= ?"));
-                params.push(Box::new(*min));
-                where_clauses.push(format!("{sc} <= ?"));
-                params.push(Box::new(*max));
-            }
-            FiltroValor::TextSearch { query } => {
-                if !query.is_empty() {
-                    where_clauses.push(format!("CAST({sc} AS TEXT) LIKE ?"));
-                    params.push(Box::new(format!("%{}%", query)));
-                }
-            }
+            FiltroValor::Categorical { selected } =>
+                add_categorical_filter(&sc, selected, &mut where_clauses, &mut params),
+            FiltroValor::CategoricalFK { selected, col_original, tabla_catalogo, col_nombre } =>
+                add_categorical_fk_filter(&p, col_original, tabla_catalogo, col_nombre, selected, conn, &mut pk_cache, &mut where_clauses, &mut params),
+            FiltroValor::Date { desde, hasta } =>
+                add_date_filter(&sc, desde, hasta, &mut where_clauses, &mut params),
+            FiltroValor::Numeric { min, max, .. } =>
+                add_numeric_filter(&sc, *min, *max, &mut where_clauses, &mut params),
+            FiltroValor::TextSearch { query } =>
+                add_text_search_filter(&sc, query, &mut where_clauses, &mut params),
         }
     }
 

@@ -1,22 +1,64 @@
-Contexto: Proyecto Rust (egui 0.29 + rusqlite + SQLite) de ~2538 líneas en 18 archivos. Es una app de escritorio para reportes de contrataciones con UI immediate-mode, filtros dinámicos, exportación Excel/PDF/PPTX, y redactor de plantillas.
+Contexto: Proyecto Rust (egui 0.29 + rusqlite + SQLite) de ~2680 líneas en 18 archivos. App de escritorio para reportes de contrataciones con UI immediate-mode, filtros dinámicos, exportación Excel/PDF/PPTX, y redactor de plantillas.
 
-No intentes compilar ni instalar Rust toolchain. El entorno es una máquina virtual con solo 504MB de rootfs — no hay espacio para descargar/extraer rustc+cargo (~500MB). Tampoco ejecutes make build, cargo build, rustup, ni ningún comando de compilación.
+No intentes compilar ni instalar Rust toolchain. Entorno con solo 504MB de rootfs, insuficiente para rustc (~500MB). No ejecutes make build, cargo build, rustup, ni nada de compilación.
 
-Tu rol es auditor de código. Trabajas exclusivamente con los archivos fuente. Puedes leer archivos, buscar patrones, revisar lógica, identificar bugs, sugerir refactors y proponer mejoras. Todo tu análisis es estático (solo lectura de código).
+Rol: Auditor de código estático. Solo lectura de archivos fuente.
 
 Reglas:
-1. No corras ningún comando de build/compilación
-2. No intentes instalar Rust
-3. Lee los .rs directamente con la herramienta de lectura de archivos
-4. Tus respuestas son análisis, observaciones y sugerencias de código
+1. No corras comandos de build/compilación
+2. No instales Rust
+3. Lee los .rs directamente
+4. Tus respuestas son análisis y sugerencias
+
+Nota importante: Este proyecto ya pasó por dos rondas de auditoría con fixes aplicados:
+
+Primera ronda (fixes aplicados):
+- LIKE interpolation → bound parameters (analysis.rs)
+- cat_/id_/preferred names hardcodeados → AnalyseConfig configurable via env (CATALOG_PREFIX, FK_ID_PREFIX, PREFERRED_NAME_COLS)
+- vw_reporte_excel_contrataciones hardcodeado → eliminado (schema.rs)
+- .unwrap_or(0) en queries → ? propagation (dashboard.rs)
+- Analizar_columna ahora recibe &AnalyseConfig
+
+Segunda ronda (fixes aplicados):
+- "id" fallback en construir_mapeo_dependencia → detectar_pk_columna() con fallback a rowid
+- starts_with("id") y "created_at","updated_at" en detectar_columna_nombre → AnalyseConfig (EXCLUDE_ID_PREFIX, EXCLUDE_NAME_COLS)
+- Literales 25, 50, 0.8 en status detection → constantes (STATUS_SHORT_LENGTH_THRESHOLD, MAX_CATEGORICAL_VALUES, STATUS_SHORT_RATIO_THRESHOLD)
+- 500 literal en export.rs → constants::TABLE_LIMIT
+
+Tercera ronda (refactors aplicados):
+- construir_where extraído en 5 funciones privadas (una por tipo de filtro)
+- seleccionar_tabla dividido en clear_selection + load_and_analyse_table
+- create_dir_all duplicado extraído a helper ensure_dir
+
+Busca específicamente hallazgos que NO se hayan cubierto, priorizando:
+
+1. Bugs/code smells:
+   - ¿Quedan unwrap/expect/panic sin justificar?
+   - Manejo de errores silencioso (unwrap_or, ok(), etc.)?
+   - Race conditions o lógica asincrónica frágil?
+
+2. Seguridad:
+   - SQL injection ya mitigado (bound params + safe_ident), ¿hay otros vectores?
+   - Validación de input del usuario (file dialog, redactor, text_search)
+   - Path traversal en exportación?
+
+3. Refactor:
+   - dashboard() función principal (~130 líneas) — ¿demasiado larga?
+   - ¿Código duplicado entre módulos?
+   - Funciones con demasiados parámetros?
+
+4. Cero hardcodeo:
+   - ¿Quedan thresholds numéricos sin constante?
+   - ¿Strings de schema hardcodeados?
+   - ¿Assumptions sobre nombres de columnas/tablas?
 
 Archivos principales:
 - src/main.rs — entry point
-- src/app.rs (474 lines) — estado global, UI panels, tema Nord Light
-- src/config.rs — detección automática de rutas
+- src/app.rs (~478 lines) — estado global, UI panels, tema Nord Light
+- src/config.rs — detección de rutas, env vars para AnalyseConfig
 - src/export.rs — exportación Excel/PDF/PPTX con screenshot
 - src/redactor.rs — plantillas de texto con placeholders
-- src/db/mod.rs + types.rs + schema.rs + analysis.rs + dashboard.rs + explorer.rs + constants.rs + utils.rs — capa universal SQLite
-- src/ui/mod.rs + sidebar.rs + tabla.rs + charts.rs + redactor_window.rs + theme.rs + widgets.rs — UI panels
+- src/db/ — capa universal SQLite (8 archivos: mod, types, schema, analysis, dashboard, explorer, constants, utils)
+- src/ui/ — UI panels (6 archivos: sidebar, tabla, charts, redactor_window, theme, widgets)
 
-Comenzar: Dame un overview del proyecto identificando: (1) posibles bugs o code smells, (2) problemas de seguridad (SQL injection, etc.), (3) oportunidades de refactor, y (4) cualquier cosa que viole el principio de "cero hardcodeo, cero assumptions del schema".
+Comenzar: Dame un overview identificando bugs, code smells, problemas de seguridad residuales, y violaciones al principio de "cero hardcodeo" que aún persistan.

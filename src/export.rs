@@ -7,10 +7,14 @@ use crate::config::Config;
 use crate::db;
 use rusqlite::Connection;
 
+fn ensure_dir(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|e| format!("Error creando directorio: {}", e))
+}
+
 pub fn abrir_carpeta_output(config: &Config) -> Result<(), String> {
     let path = &config.output_dir;
     if !path.exists() {
-        std::fs::create_dir_all(path).map_err(|e| format!("Error creando output dir: {}", e))?;
+        ensure_dir(path)?;
     }
     open::that(path).map_err(|e| format!("Error abriendo carpeta: {}", e))
 }
@@ -28,7 +32,7 @@ pub fn exportar_excel(
     ).map_err(|e| e.to_string())?;
 
     if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Error creando directorio: {}", e))?;
+        ensure_dir(parent)?;
     }
 
     let mut workbook = rust_xlsxwriter::Workbook::new();
@@ -87,7 +91,7 @@ pub fn exportar_pdf_with_screenshot(
     ).map_err(|e| e.to_string())?;
 
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Error creando directorio: {}", e))?;
+        ensure_dir(parent)?;
     }
 
     let (doc, page1, layer1) = PdfDocument::new(
@@ -158,7 +162,7 @@ pub fn exportar_pptx_with_screenshot(
     use pptx::Image;
 
     if let Some(parent) = output_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Error creando directorio: {}", e))?;
+        ensure_dir(parent)?;
     }
 
     let mut pres = Presentation::new().map_err(|e| format!("Error creando PPTX: {}", e))?;
