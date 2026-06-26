@@ -37,6 +37,15 @@ impl Config {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        let exclude_id_prefix = std::env::var("EXCLUDE_ID_PREFIX")
+            .unwrap_or_else(|_| "id".to_string());
+        let exclude_names_str = std::env::var("EXCLUDE_NAME_COLS")
+            .unwrap_or_else(|_| "created_at,updated_at".to_string());
+        let exclude_name_cols: Vec<String> = exclude_names_str
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
 
         Config {
             default_db,
@@ -49,6 +58,8 @@ impl Config {
                 catalog_prefix,
                 fk_id_prefix,
                 preferred_name_cols,
+                exclude_id_prefix,
+                exclude_name_cols,
             },
         }
     }

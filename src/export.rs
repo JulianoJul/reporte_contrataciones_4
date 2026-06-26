@@ -23,7 +23,7 @@ pub fn exportar_excel(
     config: &Config,
 ) -> Result<String, String> {
     let data = db::dashboard(
-        conn, filtros, vista, None, 1, 500, None, None,
+        conn, filtros, vista, None, 1, db::constants::TABLE_LIMIT, None, None,
         Some(&config.pending_pattern), Some(&config.signed_pattern)
     ).map_err(|e| e.to_string())?;
 

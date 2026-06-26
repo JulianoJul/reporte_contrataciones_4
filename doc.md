@@ -289,15 +289,17 @@ El código muerto se **conserva** con `#[allow(dead_code)]` — son planned feat
 
 ### Regla: Cero Hardcodeo — Configuración de Detección
 
-Se agregó `AnalyseConfig` en `db/constants.rs` con tres parámetros configurables vía env vars:
+Se agregó `AnalyseConfig` en `db/constants.rs` con parámetros configurables vía env vars:
 
 | Variable | Default | Uso |
 |---|---|---|
 | `CATALOG_PREFIX` | `cat_` | Prefijo de tablas catálogo para optimización JOIN |
 | `FK_ID_PREFIX` | `id_` | Prefijo de columnas FK para generar nombre display |
 | `PREFERRED_NAME_COLS` | `nombre,name,descripcion,desc` | Columnas preferidas como nombre display en catálogos |
+| `EXCLUDE_ID_PREFIX` | `id` | Prefijo de columnas a excluir como nombre display |
+| `EXCLUDE_NAME_COLS` | `created_at,updated_at` | Columnas a excluir como nombre display |
 
-### Fixes Aplicados
+### Fixes — Primera Ronda
 
 | # | Archivo | Cambio | Razón |
 |---|---|---|---|
@@ -310,3 +312,14 @@ Se agregó `AnalyseConfig` en `db/constants.rs` con tres parámetros configurabl
 | 7 | `db/schema.rs` | `"vw_reporte_excel_contrataciones"` eliminado como preferido absoluto; solo heurística | Nombre específico de BD de ejemplo hardcodeado |
 | 8 | `config.rs` | Nuevos campos: `catalog_prefix`, `fk_id_prefix`, `preferred_name_cols` | Soportar los nuevos parámetros vía env |
 | 9 | `app.rs` | Thread `AnalyseConfig` a través de `explorar`, `detectar_patron_optimizable`, `analizar_columna` | Pasar configuración a la capa de detección |
+
+### Fixes — Segunda Ronda (residuales)
+
+| # | Archivo | Cambio | Razón |
+|---|---|---|---|
+| 10 | `db/analysis.rs` | `"id"` fallback en `construir_mapeo_dependencia` → `detectar_pk_columna()` | Fallback a `rowid` en vez de asumir `id` |
+| 11 | `db/analysis.rs` | `starts_with("id")` y `"created_at","updated_at"` en `detectar_columna_nombre` → `config.exclude_id_prefix` / `config.exclude_name_cols` | Assumptions hardcodeadas |
+| 12 | `db/analysis.rs` | Literales `25`, `50`, `0.8` en detección de estado → `STATUS_SHORT_LENGTH_THRESHOLD`, `MAX_CATEGORICAL_VALUES`, `STATUS_SHORT_RATIO_THRESHOLD` | Thresholds no configurables |
+| 13 | `db/constants.rs` | Nuevas constantes `STATUS_SHORT_LENGTH_THRESHOLD`, `STATUS_SHORT_RATIO_THRESHOLD` y campos `exclude_id_prefix`, `exclude_name_cols` en `AnalyseConfig` | Soportar configuración |
+| 14 | `config.rs` | Nuevas env vars `EXCLUDE_ID_PREFIX`, `EXCLUDE_NAME_COLS` | Soportar configuración |
+| 15 | `export.rs` | `500` literal → `constants::TABLE_LIMIT` | Constante ya existente no usada |

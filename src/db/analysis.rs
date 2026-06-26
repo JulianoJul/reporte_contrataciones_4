@@ -4,6 +4,8 @@ use rusqlite::types::ToSql;
 
 use super::types::{ColumnaInfo, ColumnaRaw, FkInfo, DependenciaInfo};
 use super::constants;
+use super::constants::AnalyseConfig;
+use super::schema::detectar_pk_columna;
 use super::utils::{clean_identifier, safe_ident};
 use std::collections::HashMap;
 
@@ -12,15 +14,14 @@ pub fn analizar_columna(
     tabla: &str,
     col: &ColumnaRaw,
     fk_pairs: &[(String, FkInfo)],
-    fk_id_prefix: &str,
-    preferred_name_cols: &[String],
+    ac: &AnalyseConfig,
 ) -> SqlResult<Option<ColumnaInfo>> {
     let st = safe_ident(tabla);
 
     // Detect FK columns → show catalog display names
     let fk_match = fk_pairs.iter().find(|(k, _)| *k == format!("{}.{}", tabla, col.name));
     if let Some((_, fk_info)) = fk_match {
-        if let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla, preferred_name_cols)? {
+        if let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla, ac)? {
             let tc = safe_ident(&fk_info.tabla);
             let cn = safe_ident(&col_nombre);
             let mut stmt = conn.prepare(&format!(
@@ -33,7 +34,7 @@ pub fn analizar_columna(
                 .map(|v| serde_json::json!(v))
                 .collect();
             let total_dist = valores.len() as u64;
-            let nombre_display = col.name.strip_prefix(fk_id_prefix).unwrap_or(&col.name).to_string();
+            let nombre_display = col.name.strip_prefix(&ac.fk_id_prefix).unwrap_or(&col.name).to_string();
             return Ok(Some(ColumnaInfo {
                 nombre: nombre_display,
                 tipo: "categorical_fk".to_string(),
@@ -291,10 +292,12 @@ pub fn detectar_columna_estado(
         if let Ok(mut stmt) = conn.prepare(&format!(
             "SELECT COUNT(*) FROM (SELECT CAST({sc} AS TEXT) as v FROM {st} \
              WHERE v IS NOT NULL AND v != '' GROUP BY v) \
-             WHERE LENGTH(v) <= 25"
+             WHERE LENGTH(v) <= {}",
+            constants::STATUS_SHORT_LENGTH_THRESHOLD
         )) {
             short_values = stmt.query_row([], |row| row.get(0)).unwrap_or(0);
         }
+
 
         let short_ratio = if distinct_count > 0 {
             short_values as f64 / distinct_count as f64
@@ -304,7 +307,7 @@ pub fn detectar_columna_estado(
 
         let mut pend_ratio = 0.0;
         let mut firm_ratio = 0.0;
-        if distinct_count <= 50 {
+        if distinct_count <= constants::MAX_CATEGORICAL_VALUES as i64 {
             let sql = format!(
                 "SELECT \
                  CAST(SUM(CASE WHEN UPPER(CAST({sc} AS TEXT)) LIKE ? THEN 1 ELSE 0 END) AS REAL) / MAX(CAST(COUNT(*) AS REAL), 1.0), \
@@ -325,7 +328,7 @@ pub fn detectar_columna_estado(
 
         let score = if distinct_ratio < 0.3
             && distinct_count >= 2 && distinct_count <= 10
-            && short_ratio > 0.8
+            && short_ratio > constants::STATUS_SHORT_RATIO_THRESHOLD
         {
             let base = 0.5;
             if status_combined > constants::STATUS_COMBINED_THRESHOLD {
@@ -349,20 +352,26 @@ pub fn detectar_columna_estado(
     Ok(best_col)
 }
 
-pub fn detectar_columna_nombre(conn: &Connection, tabla: &str, preferred_name_cols: &[String]) -> SqlResult<Option<String>> {
+pub fn detectar_columna_nombre(
+    conn: &Connection,
+    tabla: &str,
+    ac: &AnalyseConfig,
+) -> SqlResult<Option<String>> {
     let st = safe_ident(tabla);
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", st))?;
     let col_names: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(1))?
         .filter_map(|r| r.ok())
         .collect();
-    for preferred in preferred_name_cols {
+    for preferred in &ac.preferred_name_cols {
         if col_names.iter().any(|c| c.to_lowercase() == *preferred) {
             return Ok(Some(preferred.clone()));
         }
     }
     for c in &col_names {
         let cl = c.to_lowercase();
-        if !cl.starts_with("id") && cl != "created_at" && cl != "updated_at" {
+        if !cl.starts_with(&ac.exclude_id_prefix)
+            && !ac.exclude_name_cols.iter().any(|e| cl == *e)
+        {
             return Ok(Some(c.clone()));
         }
     }
@@ -436,8 +445,18 @@ fn construir_mapeo_dependencia(
             let str_ = safe_ident(tabla_rel);
             let sa = safe_ident(&fk_info_pk.tabla);
             let sb = safe_ident(&fk_info_fk.tabla);
-            let sapc = safe_ident(if fk_info_pk.columna.is_empty() { "id" } else { &fk_info_pk.columna });
-            let saoc = safe_ident(if fk_info_fk.columna.is_empty() { "id" } else { &fk_info_fk.columna });
+            let pk_col_name = if fk_info_pk.columna.is_empty() {
+                detectar_pk_columna(conn, &fk_info_pk.tabla).unwrap_or_else(|_| "rowid".to_string())
+            } else {
+                fk_info_pk.columna.clone()
+            };
+            let fk_col_name = if fk_info_fk.columna.is_empty() {
+                detectar_pk_columna(conn, &fk_info_fk.tabla).unwrap_or_else(|_| "rowid".to_string())
+            } else {
+                fk_info_fk.columna.clone()
+            };
+            let sapc = safe_ident(&pk_col_name);
+            let saoc = safe_ident(&fk_col_name);
 
             let query = format!(
                 "SELECT DISTINCT a.{scp}, b.{sch} \

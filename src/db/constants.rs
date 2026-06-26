@@ -6,6 +6,8 @@ pub const PDF_ROW_LIMIT: usize = 200;
 pub const PK_RATIO_THRESHOLD: f64 = 0.8;
 pub const STATUS_THRESHOLD: f64 = 0.01;
 pub const STATUS_COMBINED_THRESHOLD: f64 = 0.5;
+pub const STATUS_SHORT_LENGTH_THRESHOLD: u64 = 25;
+pub const STATUS_SHORT_RATIO_THRESHOLD: f64 = 0.8;
 pub const GROUP_BY_LIMIT: u64 = 50;
 pub const DEFAULT_PENDING_PATTERN: &str = "PEND";
 pub const DEFAULT_SIGNED_PATTERN: &str = "FIRM";
@@ -16,6 +18,8 @@ pub struct AnalyseConfig {
     pub catalog_prefix: String,
     pub fk_id_prefix: String,
     pub preferred_name_cols: Vec<String>,
+    pub exclude_id_prefix: String,
+    pub exclude_name_cols: Vec<String>,
 }
 
 impl Default for AnalyseConfig {
@@ -28,6 +32,11 @@ impl Default for AnalyseConfig {
                 "name".into(),
                 "descripcion".into(),
                 "desc".into(),
+            ],
+            exclude_id_prefix: "id".to_string(),
+            exclude_name_cols: vec![
+                "created_at".into(),
+                "updated_at".into(),
             ],
         }
     }

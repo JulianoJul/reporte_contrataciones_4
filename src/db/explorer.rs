@@ -29,7 +29,7 @@ pub fn explorar(conn: &Connection, ac: &AnalyseConfig) -> SqlResult<SchemaMetada
         if col.pk {
             continue;
         }
-        if let Some(info) = analizar_columna(conn, &vista, col, &fk_pairs, &ac.fk_id_prefix, &ac.preferred_name_cols)? {
+        if let Some(info) = analizar_columna(conn, &vista, col, &fk_pairs, ac)? {
             columnas.push(info);
         }
     }
@@ -80,7 +80,7 @@ pub fn detectar_patron_optimizable(
     let mut fks_optimizadas = Vec::new();
     for (key, fk_info) in &cat_fks {
         let Some(col_id) = key.split('.').last().map(|s| s.to_string()) else { continue };
-        let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla, &ac.preferred_name_cols)? else { continue };
+        let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla, ac)? else { continue };
         let nombre_display = col_id.strip_prefix(&ac.fk_id_prefix).unwrap_or(&col_id).to_string();
         let pk_col = super::schema::detectar_pk_columna(conn, &fk_info.tabla)?;
         fks_optimizadas.push(FKOptimizada {

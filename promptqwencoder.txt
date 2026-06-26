@@ -1,0 +1,22 @@
+Contexto: Proyecto Rust (egui 0.29 + rusqlite + SQLite) de ~2538 líneas en 18 archivos. Es una app de escritorio para reportes de contrataciones con UI immediate-mode, filtros dinámicos, exportación Excel/PDF/PPTX, y redactor de plantillas.
+
+No intentes compilar ni instalar Rust toolchain. El entorno es una máquina virtual con solo 504MB de rootfs — no hay espacio para descargar/extraer rustc+cargo (~500MB). Tampoco ejecutes make build, cargo build, rustup, ni ningún comando de compilación.
+
+Tu rol es auditor de código. Trabajas exclusivamente con los archivos fuente. Puedes leer archivos, buscar patrones, revisar lógica, identificar bugs, sugerir refactors y proponer mejoras. Todo tu análisis es estático (solo lectura de código).
+
+Reglas:
+1. No corras ningún comando de build/compilación
+2. No intentes instalar Rust
+3. Lee los .rs directamente con la herramienta de lectura de archivos
+4. Tus respuestas son análisis, observaciones y sugerencias de código
+
+Archivos principales:
+- src/main.rs — entry point
+- src/app.rs (474 lines) — estado global, UI panels, tema Nord Light
+- src/config.rs — detección automática de rutas
+- src/export.rs — exportación Excel/PDF/PPTX con screenshot
+- src/redactor.rs — plantillas de texto con placeholders
+- src/db/mod.rs + types.rs + schema.rs + analysis.rs + dashboard.rs + explorer.rs + constants.rs + utils.rs — capa universal SQLite
+- src/ui/mod.rs + sidebar.rs + tabla.rs + charts.rs + redactor_window.rs + theme.rs + widgets.rs — UI panels
+
+Comenzar: Dame un overview del proyecto identificando: (1) posibles bugs o code smells, (2) problemas de seguridad (SQL injection, etc.), (3) oportunidades de refactor, y (4) cualquier cosa que viole el principio de "cero hardcodeo, cero assumptions del schema".

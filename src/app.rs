@@ -114,7 +114,7 @@ impl App {
         let mut columnas = Vec::new();
         for col in &cols_raw {
             if col.pk { continue; }
-            if let Ok(Some(info)) = db::analysis::analizar_columna(conn, &tabla, col, &fk_pairs, &self.config.analyse.fk_id_prefix, &self.config.analyse.preferred_name_cols) {
+            if let Ok(Some(info)) = db::analysis::analizar_columna(conn, &tabla, col, &fk_pairs, &self.config.analyse) {
                 columnas.push(info);
             }
         }
