@@ -3017,6 +3017,9 @@ reporte_contrataciones_4/
 ├── output/               # Archivos exportados
 ├── Tablas3.sql           # Schema de ejemplo
 ├── Inserts2.sql          # Datos de ejemplo
+├── prompt                # Prompt para auditorías Qwen
+├── .cargo/
+│   └── config.toml       # Cross-compile + static CRT config
 └── python/               # Scripts originales (legacy)
 ```
 
@@ -3092,6 +3095,9 @@ make release     # cargo build --release
 make run         # cargo run
 make clean       # cargo clean + rm combined.txt
 make combine     # concatena todo el código en combined.txt
+make commit msg="x"  # git add -A + git commit
+make push        # git push
+make github msg="x"  # commit + push (shortcut)
 ```
 
 ## Reglas del Proceso
@@ -3427,3 +3433,32 @@ reporte_contrataciones_4-v1.0.0-windows.zip/
 ```
 
 **Archivo creado**: `.cargo/config.toml` con configuración de target features y linker.
+
+---
+
+## Fixes Tercera Auditoría Qwen (Junio 2026) ✓
+
+### 🟡 Prioridad Media
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| A1 | `config.rs` | `PdfConfig::default().title` → `String::new()` (vacío). El título solo se lee de env var `PDF_TITLE` | Eliminar hardcodeo: string "Dashboard de Contrataciones" en default |
+| B5 | `export.rs` + `app.rs` | Extraída `process_screenshot(img: &egui::ColorImage) -> Vec<u8>` en `export.rs` | DRY: lógica screenshot→PNG duplicada inline en `app.rs` ahora reutilizable |
+| D1 | `db/utils.rs` | `safe_date_parse` loggea error con `eprintln!` antes de usar fallback | Errores de parseo de fecha silenciados ahora visibles |
+
+### 🟢 Prioridad Baja
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| A2 | `config.rs` | Env vars `PPTX_IMAGE_W_EMU` y `PPTX_IMAGE_H_EMU` con defaults | Valores EMU hardcodeados ahora configurables |
+| A4 | `constants.rs` + `config.rs` | `DEFAULT_EXCEL_NAME`, `DEFAULT_PDF_NAME`, `DEFAULT_PPTX_NAME` movidos a `constants.rs` | Nombres default en el lugar correcto, no en `config.rs` |
+| B1 | `ui/widgets.rs` → `db/utils.rs` | `safe_date_parse` movida a módulo de utilidades general | Ubicación incorrecta (estaba en UI, es utilidad general) |
+| B4 | `redactor.rs` + 5 archivos | `limpiar_nombre` eliminado; nueva función `display_name()` en `db/utils.rs`. 11 ocurrencias de `replace('_', " ")` reemplazadas | DRY: lógica duplicada en 6 archivos unificada |
+
+### Otros cambios
+
+| Archivo | Cambio | Razón |
+|---------|--------|-------|
+| `promptqwencoder.txt` | **Eliminado** | Reemplazado por `prompt` (formato más limpio) |
+| `prompt` | **Creado** | Prompt unificado para Qwen, instrucciones de solo leer `combined.txt` + `data/Tablas3.sql` |
+| `.gitignore` | `combined.txt` removido | Se trackea en git para que Qwen lo encuentre sin generar |
