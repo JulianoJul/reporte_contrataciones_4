@@ -171,7 +171,7 @@ make combine     # concatena todo el código en combined.txt
 2. **Makefile siempre**: después de cambios, ejecutar `make build` y `make combine`.
 3. **Sin hardcodeo**: cero assumptions de naming conventions. Toda heurística debe ser configurable.
 4. **Historial de cambios**: cada cambio debe agregarse a la cronología en `doc.md` con fecha, archivo, y razón.
-5. **Código modular**: las funciones deben diseñarse con una única responsabilidad y sin redundancia de lógica. Evitar duplicación de patrones, extraer helpers reutilizables cuando un bloque de código aparece en más de un lugar. No hay un límite rígido de líneas por archivo o función; la métrica es cohesión interna y ausencia de repetición.
+5. **DRY + Reutilización**: toda pieza de lógica debe tener una representación única. No repetir código ni copiar-pegar bloques. Si un patrón aparece en más de un lugar, extraer a función reutilizable. La modularidad no se mide en líneas por archivo ni por función, sino en ausencia de redundancia y en que cada función tenga una única responsabilidad (SRP). Una función de 200 líneas sin duplicación interna es mejor que 4 funciones de 50 líneas con lógica repetida.
 
 ---
 

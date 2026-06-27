@@ -6,7 +6,7 @@ Rol: Auditor de código estático. Buscas violaciones a las reglas del proyecto 
 
 REGLAS DEL PROYECTO (priorizadas):
 1. Zero hardcodeo: No debe haber strings/valores literales que dependan del schema (prefijos cat_, id_, vw_, nombres de tabla, patrones de estado). Todo debe ser configurable desde AnalyseConfig + env vars (ver constants.rs + config.rs).
-2. Modularidad: Funciones con responsabilidad única y sin redundancia. Extraer helpers cuando un patrón se repite. No hay límite rígido de líneas; la métrica es cohesión y DRY.
+2. DRY + Reutilización: toda lógica debe tener representación única. No copiar-pegar bloques. Si un patrón aparece en más de un lugar, extraer a función reutilizable. No importa el tamaño del archivo/función; la métrica es cero redundancia y SRP por función.
 3. SQL correcto: Sin CAST innecesarios, ORDER BY en consultas paginadas, GROUP BY consistente con SELECT, bound parameters siempre (nunca interpolación directa de user input), JOINs en vez de subqueries correlacionadas cuando sea práctico.
 4. Manejo de errores: Sin unwrap() que pueda panic. Usar ? y pattern matching.
 
