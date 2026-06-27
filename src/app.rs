@@ -77,9 +77,9 @@ impl App {
                         self.meta = meta;
                         let vista = self.meta.vista_principal.clone();
                         if vista.is_empty() {
-                            self.seleccionar_tabla(
-                                self.tablas_disponibles.first().cloned().unwrap_or_default(),
-                            );
+                            if let Some(t) = self.tablas_disponibles.first().cloned() {
+                                self.seleccionar_tabla(t);
+                            }
                         } else {
                             self.seleccionar_tabla(vista);
                         }
@@ -148,7 +148,7 @@ impl App {
         };
         self.vista = tabla.clone();
         self.modo = db::detectar_patron_optimizable(conn, &tabla, &self.config.analyse)
-            .unwrap_or(ModoOptimizacion::Universal);
+            .unwrap_or_else(|e| { eprintln!("[app] Error detectando patrón para {}: {}", tabla, e); ModoOptimizacion::Universal });
         self.load_and_analyse_table(&tabla);
         self.init_filtros();
         self.needs_refresh = true;
@@ -201,16 +201,16 @@ impl App {
             return;
         }
         self.is_loading = true;
-        self.data = db::dashboard(
+        match db::dashboard(
             conn, &self.filtros, &self.vista,
             if self.group_by.is_empty() { None } else { Some(self.group_by.as_str()) },
             self.data.current_page, self.data.page_size,
             self.status_col.as_deref(), Some(&self.modo),
             Some(&self.config.pending_pattern), Some(&self.config.signed_pattern),
-        ).unwrap_or_else(|e| {
-            self.error = Some(format!("Error cargando datos: {}", e));
-            DashboardData::default()
-        });
+        ) {
+            Ok(data) => { self.data = data; self.error = None; }
+            Err(e) => { self.error = Some(format!("Error cargando datos: {}", e)); }
+        }
         self.is_loading = false;
         self.last_update = chrono::Local::now().format("%H:%M:%S").to_string();
     }
