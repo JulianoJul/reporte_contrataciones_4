@@ -56,7 +56,7 @@ fn add_numeric_filter(sc: &str, min: f64, max: f64, clauses: &mut Vec<String>, p
 
 fn add_text_search_filter(sc: &str, query: &str, clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>) {
     if !query.is_empty() {
-        clauses.push(format!("CAST({} AS TEXT) LIKE ?", sc));
+        clauses.push(format!("{} LIKE ?", sc));
         params.push(Box::new(format!("%{}%", query)));
     }
 }
@@ -161,8 +161,8 @@ pub fn dashboard(
         };
         let group_sql = format!(
             "SELECT CAST({sc} AS TEXT), COUNT(*) {from_clause} {group_where} \
-             {sc} IS NOT NULL AND CAST({sc} AS TEXT) != '' \
-             GROUP BY {sc} ORDER BY COUNT(*) DESC LIMIT {}",
+             CAST({sc} AS TEXT) IS NOT NULL AND CAST({sc} AS TEXT) != '' \
+             GROUP BY CAST({sc} AS TEXT) ORDER BY COUNT(*) DESC LIMIT {}",
             constants::GROUP_BY_LIMIT
         );
         let mut stmt = conn.prepare(&group_sql)?;
@@ -198,9 +198,14 @@ pub fn dashboard(
 
     let offset = page.saturating_sub(1) * page_size;
     let limit = page_size.min(constants::TABLE_LIMIT);
+    let p_order = col_prefix(modo);
+    let order_col = col_names.first()
+        .map(|c| format!("{}{}", p_order, safe_ident(c)))
+        .unwrap_or_else(|| "rowid".to_string());
     let table_sql = format!(
-        "SELECT {} {from_clause} {where_sql} LIMIT {} OFFSET {}",
+        "SELECT {} {from_clause} {where_sql} ORDER BY {} LIMIT {} OFFSET {}",
         select_cols.join(", "),
+        order_col,
         limit,
         offset,
     );
@@ -251,7 +256,7 @@ fn contar_por_estado(
     let escaped_pattern = format!("%{}%", pattern.to_uppercase());
     let cond = if where_sql.is_empty() { "WHERE".to_string() } else { format!("{} AND", where_sql) };
     let sql = format!(
-        "SELECT COUNT(*) {from_clause} {cond} UPPER(CAST({sc} AS TEXT)) LIKE ?"
+        "SELECT COUNT(*) {from_clause} {cond} UPPER({sc}) LIKE ?"
     );
 
     let mut local_params: Vec<&dyn ToSql> = params.to_vec();
