@@ -52,3 +52,5 @@ d) ERRORES de manejo: unwrap() que pueda panic, errores no propagados con ?.
 Para cada hallazgo indica: archivo:línea, regla violada, severidad (Alta/Media/Baja), y sugerencia de fix.
 
 Además, al final del reporte, genera un archivo llamado `plan_modificaciones.md` con la lista completa de hallazgos priorizados por severidad, cada uno con: archivo:línea, descripción del problema, fix sugerido, y estado inicial "pendiente". Este archivo servirá como guía para que opencode implemente los fixes uno por uno.
+
+BUG CONOCIDO (investigar prioridad): El dashboard no se renderiza / no se ve. Revisar flujo completo: app.rs refresh_data → db::dashboard() → construcción SQL → query → UI tabla. Posibles causas: error silenciado en SQL, página/offset inválido, columnas vacías, o excepción no capturada en update(). Buscar unwrap/panic silenciado que interrumpa el frame de egui sin mostrar error.
