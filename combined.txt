@@ -753,7 +753,7 @@ pub fn exportar_excel(
         for (col_idx, col_name) in data.columnas_tabla.iter().enumerate() {
             let val = row
                 .get(col_name)
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .map(crate::db::utils::json_value_to_string)
                 .unwrap_or_default();
             sheet
                 .write_string((row_idx + 1) as u32, col_idx as u16, &val)
@@ -962,7 +962,7 @@ impl Redactor {
                 .iter()
                 .map(|row| {
                     row.get(col_name)
-                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .map(crate::db::utils::json_value_to_string)
                         .unwrap_or_default()
                 })
                 .collect();
@@ -2270,6 +2270,10 @@ pub fn safe_date_parse(date_str: &str, fallback: NaiveDate) -> NaiveDate {
             fallback
         }
     }
+}
+
+pub fn json_value_to_string(v: &serde_json::Value) -> String {
+    v.as_str().map(|s| s.to_string()).unwrap_or_default()
 }
 
 pub fn display_name(name: &str) -> String {

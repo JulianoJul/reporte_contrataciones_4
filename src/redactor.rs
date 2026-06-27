@@ -49,7 +49,7 @@ impl Redactor {
                 .iter()
                 .map(|row| {
                     row.get(col_name)
-                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .map(crate::db::utils::json_value_to_string)
                         .unwrap_or_default()
                 })
                 .collect();

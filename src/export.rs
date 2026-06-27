@@ -77,7 +77,7 @@ pub fn exportar_excel(
         for (col_idx, col_name) in data.columnas_tabla.iter().enumerate() {
             let val = row
                 .get(col_name)
-                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .map(crate::db::utils::json_value_to_string)
                 .unwrap_or_default();
             sheet
                 .write_string((row_idx + 1) as u32, col_idx as u16, &val)

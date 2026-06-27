@@ -25,6 +25,10 @@ pub fn safe_date_parse(date_str: &str, fallback: NaiveDate) -> NaiveDate {
     }
 }
 
+pub fn json_value_to_string(v: &serde_json::Value) -> String {
+    v.as_str().map(|s| s.to_string()).unwrap_or_default()
+}
+
 pub fn display_name(name: &str) -> String {
     name.replace('_', " ")
 }

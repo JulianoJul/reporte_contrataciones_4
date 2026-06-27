@@ -42,6 +42,7 @@ Toda lógica debe tener representación única. No copiar-pegar bloques. Si un p
 - `obtener_pk_con_fallback`
 - `display_name`
 - `process_screenshot`
+- `json_value_to_string`
 
 Verificar si queda algún patrón residual no cubierto por estas funciones.
 
@@ -193,10 +194,12 @@ Este archivo servirá como guía para implementar los fixes uno por uno.
 - Distribución: ZIP con `.exe` + `data/` + `output/`.
 - **No es necesario investigar ni reportar sobre cross-compile o portabilidad.**
 - **No es necesario evaluar crates alternativos de egui**; el dashboard actual con `egui_plot` es adecuado.
-- **REGLAS DEL PROCESO:** Después de implementar los fixes del plan, se debe:
-  1. Ejecutar `make build && make combine` para verificar que compila y regenerar `combined.txt`
-  2. Actualizar `doc.md` con el historial de cambios (nueva sección con fecha, archivos, y razón de cada fix)
-  3. Subir a GitHub con `make github msg="mensaje"` o manualmente
+- **REGLAS DEL PROCESO PARA OPENCODE:**
+  1. `plan_modificaciones.md` es la guía — opencode lee este archivo e implementa los fixes uno por uno de mayor a menor prioridad
+  2. Después de cada fix, ejecutar `make build` para verificar que compila
+  3. Al terminar todos los fixes, ejecutar `make build && make combine`
+  4. Actualizar `doc.md` con historial de cambios (fecha, archivos, razón de cada fix)
+  5. Subir a GitHub con `make github msg="mensaje"`
 
 ---
 
