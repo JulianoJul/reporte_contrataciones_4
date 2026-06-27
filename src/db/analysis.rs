@@ -272,8 +272,8 @@ pub fn detectar_columna_estado(
 
         let (distinct_count, total_count): (i64, i64) = match conn.query_row(
             &format!(
-                "SELECT COUNT(DISTINCT CAST({sc} AS TEXT)), COUNT(*) FROM {st} \
-                 WHERE CAST({sc} AS TEXT) IS NOT NULL AND CAST({sc} AS TEXT) != ''"
+                "SELECT COUNT(DISTINCT v), COUNT(*) FROM (SELECT CAST({sc} AS TEXT) AS v FROM {st}) \
+                 WHERE v IS NOT NULL AND v != ''"
             ),
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -311,8 +311,8 @@ pub fn detectar_columna_estado(
         if distinct_count <= constants::MAX_CATEGORICAL_VALUES as i64 {
             let sql = format!(
                 "SELECT \
-                 CAST(SUM(CASE WHEN UPPER(CAST({sc} AS TEXT)) LIKE ? THEN 1 ELSE 0 END) AS REAL) / MAX(CAST(COUNT(*) AS REAL), 1.0), \
-                 CAST(SUM(CASE WHEN UPPER(CAST({sc} AS TEXT)) LIKE ? THEN 1 ELSE 0 END) AS REAL) / MAX(CAST(COUNT(*) AS REAL), 1.0) \
+                 CAST(SUM(CASE WHEN UPPER({sc}) LIKE ? THEN 1 ELSE 0 END) AS REAL) / MAX(1.0 * COUNT(*), 1.0), \
+                 CAST(SUM(CASE WHEN UPPER({sc}) LIKE ? THEN 1 ELSE 0 END) AS REAL) / MAX(1.0 * COUNT(*), 1.0) \
                  FROM {st}"
             );
             let (p, f): (f64, f64) = conn.query_row(
