@@ -193,6 +193,10 @@ Este archivo servirá como guía para implementar los fixes uno por uno.
 - Distribución: ZIP con `.exe` + `data/` + `output/`.
 - **No es necesario investigar ni reportar sobre cross-compile o portabilidad.**
 - **No es necesario evaluar crates alternativos de egui**; el dashboard actual con `egui_plot` es adecuado.
+- **REGLAS DEL PROCESO:** Después de implementar los fixes del plan, se debe:
+  1. Ejecutar `make build && make combine` para verificar que compila y regenerar `combined.txt`
+  2. Actualizar `doc.md` con el historial de cambios (nueva sección con fecha, archivos, y razón de cada fix)
+  3. Subir a GitHub con `make github msg="mensaje"` o manualmente
 
 ---
 
