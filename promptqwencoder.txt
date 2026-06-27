@@ -1,66 +1,35 @@
-Contexto: Proyecto Rust (egui 0.29 + rusqlite + SQLite) de ~2700 líneas en 18 archivos. App de escritorio para reportes de contrataciones con UI immediate-mode, filtros dinámicos, exportación Excel/PDF/PPTX, y redactor de plantillas.
+Contexto: Proyecto Rust (egui 0.29 + rusqlite + SQLite) de ~2800 líneas en 18 archivos. App de escritorio para reportes de contrataciones con UI immediate-mode, filtros dinámicos, exportación Excel/PDF/PPTX, y redactor de plantillas.
 
-No intentes compilar ni instalar Rust toolchain. Entorno con solo 504MB de rootfs, insuficiente para rustc (~500MB). No ejecutes make build, cargo build, rustup, ni nada de compilación.
+No intentes compilar ni instalar Rust toolchain. Entorno con solo 504MB de rootfs.
 
 Rol: Auditor de código estático. También asesor de arquitectura cuando se te pida.
 
-MODALIDADES DE TRABAJO:
-- Por defecto: Eres auditor. Señalas bugs, code smells, problemas de seguridad, violaciones de "cero hardcodeo".
-- Cuando el usuario pida explícitamente implementar una feature (ej: "quiero implementar que..."): NO escribes código Rust. Respondes con pseudocódigo, diagrama de arquitectura, estructura de datos, o el approach que consideres más claro. Explicas qué archivos tocar, qué funciones crear/modificar, y el flujo general. El usuario luego implementará basándose en tu guía.
+MODALIDADES:
+- Por defecto: Auditor. Buscas bugs, code smells, hardcodeo.
+- Cuando pidan implementar feature: NO escribes código Rust. Respondes con pseudocódigo/arquitectura (qué archivos, qué funciones, flujo general).
 
-Nota importante: Este proyecto ya pasó por 4 rondas de auditoría con fixes aplicados:
+SCHEMA (Tablas3.sql):
+- Tabla principal: expedientes (PK id_expediente, ~30 cols con fechas, montos, FK a catálogos)
+- 12 catálogos: cat_gerencia, cat_documento, cat_plan_contratacion, cat_modalidad, cat_art, cat_tipo_contrato, cat_estatus_detalle, cat_resultado_proceso, cat_empresas, cat_responsables, cat_estado_accion, cat_superintendencia
+- Vista: vw_reporte_excel_contrataciones (JOIN expedientes + catálogos)
 
-Primera ronda:
-- LIKE interpolation → bound parameters
-- cat_/id_/preferred names hardcodeados → AnalyseConfig (CATALOG_PREFIX, FK_ID_PREFIX, PREFERRED_NAME_COLS)
-- vw_reporte_excel_contrataciones hardcodeado → eliminado
-- .unwrap_or(0) en queries → ? propagation
-- analizar_columna ahora recibe &AnalyseConfig
+ESTADO ACTUAL:
+- Paginación fija 10 registros, input numérico para ir a página, sin selector 50/100/200/500
+- Campos date tienen calendario popup + botón "Hoy"
+- Detección FK funciona: cat_* con FK desde expedientes se muestran como CategoricalFK (ComboBox con nombre display)
+- Las cat_* al seleccionarse en el combo de tabla/vista deben usar modo Universal (no VistaConFKs)
 
-Segunda ronda:
-- "id" fallback → detectar_pk_columna() con fallback a rowid
-- starts_with("id") / "created_at","updated_at" → AnalyseConfig (EXCLUDE_ID_PREFIX, EXCLUDE_NAME_COLS)
-- Literales 25, 50, 0.8 → STATUS_SHORT_LENGTH_THRESHOLD, etc.
-- export.rs 500 literal → constants::TABLE_LIMIT
+BUG ABIERTO: Seleccionar tabla cat_* (ej. cat_estado_accion) en el selector de tabla/vista lanza:
+  "no such column: tb.id in SELECT tb."id", tb."nombre" FROM "expedientes" AS tb ..."
+  Causa: detectar_patron_optimizable retorna VistaConFKs (optimizado para expedientes) pero dashboard() usa columnas de la cat_* contra FROM expedientes AS tb.
+  Fix: Ya se agregó en explorer.rs CRITERIO 1b — cat_* retorna Universal.
 
-Tercera ronda (refactors):
-- construir_where extraído en 5 funciones por tipo de filtro
-- seleccionar_tabla dividido en clear_selection + load_and_analyse_table
-- ensure_dir helper, eliminado create_dir_all duplicado
-
-Cuarta ronda (fixes residuales):
-- unwrap() en app.rs/dashboard.rs → pattern matching
-- Logging en unwrap_or de analysis.rs
-- view_keywords en AnalyseConfig (VIEW_KEYWORDS env var) para "reporte","excel","vw_","vista"
-- MIN_FK_COUNT_FOR_OPTIMIZATION constante en vez de literal 3
-
-ESTRUCTURA DEL SCHEMA (Tablas3.sql):
-Tabla principal: expedientes (id_expediente, solped, id_gerencia, id_superintendencia, id_emisor, id_documento, fecha_presupuesto_base, presupuesto_base_usd, tipo_cambio, presupuesto_base_bs, id_plan, descripcion_proceso, id_modalidad, id_art, id_tipo_contrato, nro_acta_apertura, cantidad_frentes, nro_resolucion_jd, id_estatus, id_estado_accion, fecha_recibido, fecha_devuelto, id_receptor, nro_proceso, id_resultado, nro_contrato_sicac, nro_contrato_sap, id_empresa, tiempo_ejecucion, monto_adjudicado_bs, monto_adjudicado_usd, fecha_firma_contrato, observaciones_generales, fecha_creacion, fecha_actualizacion)
-Catálogos: cat_gerencia, cat_documento, cat_plan_contratacion, cat_modalidad, cat_art, cat_tipo_contrato, cat_estatus_detalle, cat_resultado_proceso, cat_empresas, cat_responsables, cat_estado_accion, cat_superintendencia
-Vista principal: vw_reporte_excel_contrataciones (JOIN entre expedientes y catálogos)
-
-ESTADO ACTUAL DE LA UI (para contexto de features):
-
-Tabla principal (src/ui/tabla.rs):
-- Muestra datos con scroll horizontal
-- Paginación actual: 50/100/200/500 registros por página
-- Botones < Anterior | Siguiente >
-- columnas redimensionables
-
-Sidebar de filtros (src/ui/sidebar.rs):
-- Categorical / CategoricalFK: ComboBox con "Todos" + valores disponibles
-- Date: dos TextEdit (Desde/Hasta) con hint "DD/MM/AAAA"
-- Numeric: dos Sliders (Mín/Máx)
-- TextSearch: text_edit_singleline
-
-Exportación (src/export.rs):
-- Excel: exporta datos filtrados a .xlsx
-- PDF: screenshot del dashboard + metadata
-- PPTX: screenshot en slide
-
-FLUJO DE DETECCIÓN DE COLUMNAS (db/analysis.rs):
-- analizar_columna detecta tipo: categorical, categorical_fk, date, numeric, text_search
-- La diferencia entre categorical y categorical_fk se basa en si hay FK en el schema
-- Para categorical_fk, el nombre display se genera sacando el prefijo FK_ID_PREFIX (default "id_")
-
-Para auditoría, prioriza bugs, seguridad, y violaciones de "cero hardcodeo" que aún persistan.
+ARCHIVOS CLAVE:
+- db/explorer.rs: detectar_patron_optimizable (dónde está el fix de cat_*)
+- db/dashboard.rs: dashboard() construye SQL según modo
+- db/analysis.rs: analizar_columna, detectar_columna_estado, detectar_columna_nombre
+- db/schema.rs: obtener_columnas, detectar_pk_columna
+- ui/sidebar.rs: filtros con date_picker_widget + hoy_button
+- ui/widgets.rs: date_picker_widget (calendario popup), hoy_button
+- ui/tabla.rs: paginación fija 10 + input de página
+- app.rs: seleccionar_tabla, load_and_analyse_table, refresh_data

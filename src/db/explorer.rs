@@ -56,9 +56,13 @@ pub fn detectar_patron_optimizable(
 ) -> SqlResult<ModoOptimizacion> {
     let vl = vista.to_lowercase();
 
-    // CRITERIO 1: Si es una vista con keywords conocidos,
-    // siempre usa modo Universal (ya tiene JOINs resueltos)
+    // CRITERIO 1: Vistas con keywords conocidos → Universal
     if vista.is_empty() || ac.view_keywords.iter().any(|kw| vl.contains(kw.as_str())) {
+        return Ok(ModoOptimizacion::Universal);
+    }
+
+    // CRITERIO 1b: Tablas catálogo → Universal (no tienen FKs de negocio, se consultan directas)
+    if vl.starts_with(&ac.catalog_prefix) {
         return Ok(ModoOptimizacion::Universal);
     }
 
