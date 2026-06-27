@@ -2,7 +2,7 @@ Contexto: Proyecto Rust (egui 0.29 + rusqlite + SQLite) de ~3000 líneas en 18 a
 
 No intentes compilar ni instalar Rust toolchain. Entorno con solo 504MB de rootfs.
 
-IMPORTANTE: Todo el código fuente está consolidado en el archivo `combined.txt` (Cargo.toml + todos los .rs + doc.md). No leas los .rs individuales; usa solo `combined.txt`.
+IMPORTANTE: El código fuente está en `combined.txt` (Cargo.toml + todos los .rs + doc.md) y el schema SQL en `data/Tablas3.sql`. Lee ambos archivos; no los .rs individuales.
 
 Rol: Auditor de código estático. Buscas violaciones a las reglas del proyecto en el código Rust.
 
@@ -12,10 +12,12 @@ REGLAS DEL PROYECTO (priorizadas):
 3. SQL correcto: Sin CAST innecesarios, ORDER BY en consultas paginadas, GROUP BY consistente con SELECT, bound parameters siempre (nunca interpolación directa de user input), JOINs en vez de subqueries correlacionadas cuando sea práctico. Los filtros FK ahora usan LEFT JOIN en vez de subquery correlacionada.
 4. Manejo de errores: Sin unwrap() que pueda panic. Usar ? y pattern matching. Errores de detección de patrón y dashboard se muestran al usuario vía self.error.
 
-SCHEMA (Tablas3.sql):
+SCHEMA (data/Tablas3.sql — leer este archivo para la estructura exacta):
 - Tabla principal: expedientes (PK id_expediente, ~30 cols con fechas, montos, FK a catálogos)
 - 12 catálogos: cat_gerencia, cat_documento, cat_plan_contratacion, cat_modalidad, cat_art, cat_tipo_contrato, cat_estatus_detalle, cat_resultado_proceso, cat_empresas, cat_responsables, cat_estado_accion, cat_superintendencia
 - Vista: vw_reporte_excel_contrataciones (JOIN expedientes + catálogos)
+
+NOTA SOBRE SQL: El código SQL debe ser universal (funcionar con cualquier schema), pero la app se construye para esta BDD específica y solo SQLite. Usa funciones/features de SQLite cuando sea práctico, pero sin hardcodear nombres de tabla/columna que no vengan de AnalyseConfig.
 
 ESTADO ACTUAL (features ya implementadas):
 - Paginación fija 10 registros, input numérico para ir a página
@@ -57,7 +59,7 @@ ARCHIVOS CLAVE:
 - redactor.rs: plantillas con placeholders
 
 INSTRUCCIÓN ESPECÍFICA:
-Realiza una auditoría completa del código Rust (leyendo solo `combined.txt`, no los archivos individuales) buscando:
+Realiza una auditoría completa del código Rust (leyendo `combined.txt` + `data/Tablas3.sql`, no los archivos individuales) buscando:
 a) VIOLACIONES DE HARDCODEO: literales que dependan del schema (nombres de columna, prefijos, patrones) que no estén en AnalyseConfig.
 b) VIOLACIONES DE DRY/REUTILIZACIÓN: lógica duplicada (bloques copiados en >1 lugar), patrones que deberían ser funciones reutilizables, responsabilidades mezcladas en una misma función. No importa el tamaño en líneas.
 c) VIOLACIONES SQL: CAST innecesario, falta de ORDER BY en paginación, GROUP BY inconsistente, interpolación directa, subqueries donde JOIN sería mejor.
@@ -69,10 +71,7 @@ Además, al final del reporte, genera un archivo llamado `plan_modificaciones.md
 
 TAREAS EXTRAS (investigar y reportar):
 E1) 🔴 PRIORIDAD ALTA: Evaluación de crates egui para dashboard: Analizar si egui-charts (130+ indicadores, 20+ tipos de chart), egui-elegance (widgets modernos, paletas), Rust-Dashboard (system monitoring), o egui_plot nativo pueden mejorar el dashboard actual. Reportar cuáles son viables, cuáles requieren cambios en Cargo.toml, y cuáles aportan valor real vs el código actual.
-E2) Cross-compile Windows desde Linux: Verificar que todas las dependencias en Cargo.toml soporten target x86_64-pc-windows-gnu o x86_64-pc-windows-msvc. Evaluar si rfd (file dialog), open (abrir archivos), printpdf, image, etc. tienen dependencias platform-specific que compliquen el cross-compile.
 
-E2) RESULTADO: Dependencias mayormente Pure Rust (egui*, rusqlite bundled, rust_xlsxwriter, printpdf, image, pptx, open, chrono, serde). Único riesgo: `rfd 0.15` usa windows-sys y tiene linker issues con MinGW (ver egui#3836). Solución recomendada: usar `cargo-xwin` con target `x86_64-pc-windows-msvc` en vez de MinGW. Config en `.cargo/config.toml` listo.
+E2) RESULTADO cross-compile: Dependencias mayormente Pure Rust. Único riesgo: `rfd 0.15` (windows-sys) tiene linker issues con MinGW. Usar `cargo-xwin` con target MSVC. Config en `.cargo/config.toml` listo.
 
-E3) Portable ejecutable sin admin: Verificar que el binario compilado con --release no requiera runtime externo ni permisos de administrador en Windows. Evaluar si se necesita agrupar data/ y output/ con el .exe, y cómo distribuir (ZIP, installer, etc.).
-
-E3) RESULTADO: Agregado `rustflags = ["-C", "target-feature=+crt-static"]` para `x86_64-pc-windows-msvc` en `.cargo/config.toml`. Esto linkea estáticamente el CRT de Windows, eliminando dependencia de `VCRUNTIME140.dll`. El .exe corre en Windows 8+ sin VC++ Redist, sin admin, desde USB. Distribución: ZIP con .exe + data/ + output/.
+E3) RESULTADO portable: Agregado `+crt-static` para MSVC en `.cargo/config.toml`. El .exe no necesita VC++ Redist ni admin. Distribución: ZIP con .exe + data/ + output/.
