@@ -4,26 +4,22 @@ use rusqlite::Result as SqlResult;
 use super::types::{ColumnaRaw, FkInfo};
 use super::utils::{clean_identifier, safe_ident};
 
-pub fn listar_tablas(conn: &Connection) -> SqlResult<Vec<String>> {
+fn listar_objetos_sqlite(conn: &Connection, tipo: &str) -> SqlResult<Vec<String>> {
     let mut stmt = conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
+        &format!("SELECT name FROM sqlite_master WHERE type='{}' ORDER BY name", tipo),
     )?;
-    let tablas = stmt
-        .query_map([], |row| row.get(0))?
+    let items: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(0))?
         .filter_map(|r| r.ok())
         .collect();
-    Ok(tablas)
+    Ok(items)
+}
+
+pub fn listar_tablas(conn: &Connection) -> SqlResult<Vec<String>> {
+    listar_objetos_sqlite(conn, "table")
 }
 
 pub fn listar_vistas(conn: &Connection) -> SqlResult<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name",
-    )?;
-    let vistas: Vec<String> = stmt
-        .query_map([], |row| row.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(vistas)
+    listar_objetos_sqlite(conn, "view")
 }
 
 pub fn encontrar_vista_principal(conn: &Connection, view_keywords: &[String]) -> SqlResult<Option<String>> {
@@ -126,5 +122,8 @@ pub fn detectar_pk_columna(conn: &Connection, tabla: &str) -> SqlResult<String> 
 }
 
 pub fn obtener_pk_con_fallback(conn: &Connection, tabla: &str, fallback: &str) -> String {
-    detectar_pk_columna(conn, tabla).unwrap_or_else(|_| fallback.to_string())
+    detectar_pk_columna(conn, tabla).unwrap_or_else(|e| {
+        eprintln!("[schema] PK detection failed for {}: {}", tabla, e);
+        fallback.to_string()
+    })
 }

@@ -214,7 +214,7 @@ pub fn dashboard(
     if let Ok(rows) = stmt.query_map(params_refs.as_slice(), |row| {
         let mut map = HashMap::new();
         for (i, name) in col_names.iter().enumerate() {
-            let val: String = row.get::<_, Option<String>>(i).unwrap_or_default().unwrap_or_default();
+            let val: String = row.get::<_, Option<String>>(i).ok().flatten().unwrap_or_default();
             map.insert(name.clone(), serde_json::Value::String(val));
         }
         Ok(map)

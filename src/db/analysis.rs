@@ -188,7 +188,7 @@ pub fn analizar_columna(
         _ => {
             let row: std::result::Result<(i64, f64), _> = conn.query_row(
                 &format!(
-                    "SELECT COUNT(DISTINCT {sc}), AVG(CAST(LENGTH({sc}) AS REAL)) \
+                    "SELECT COUNT(DISTINCT {sc}), AVG(LENGTH({sc})) \
                      FROM (SELECT {sc} FROM {st} LIMIT {})",
                     constants::SAMPLE_SIZE
                 ),
