@@ -23,6 +23,8 @@ pub const STATUS_MAX_DISTINCT: i64 = 10;
 pub const STATUS_SCORE_BASE: f64 = 0.5;
 pub const STATUS_BOTH_MULTIPLIER: f64 = 2.0;
 pub const STATUS_COVERAGE_MULTIPLIER: f64 = 0.3;
+pub const FK_KEY_SEPARATOR: &str = ".";
+pub const FK_ALIAS_PREFIX: &str = "c_";
 
 #[derive(Debug, Clone)]
 pub struct AnalyseConfig {
@@ -33,6 +35,7 @@ pub struct AnalyseConfig {
     pub exclude_name_cols: Vec<String>,
     pub view_keywords: Vec<String>,
     pub fallback_pk_name: String,
+    pub redactor_placeholders: Vec<String>,
 }
 
 impl Default for AnalyseConfig {
@@ -58,6 +61,11 @@ impl Default for AnalyseConfig {
                 "vista".into(),
             ],
             fallback_pk_name: DEFAULT_PK_FALLBACK.to_string(),
+            redactor_placeholders: vec![
+                "#total".into(),
+                "#pendientes".into(),
+                "#firmados".into(),
+            ],
         }
     }
 }

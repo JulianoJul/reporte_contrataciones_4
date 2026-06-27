@@ -19,6 +19,19 @@ pub fn abrir_carpeta_output(config: &Config) -> Result<(), String> {
     open::that(path).map_err(|e| format!("Error abriendo carpeta: {}", e))
 }
 
+fn fetch_dashboard_data(
+    conn: &Connection,
+    filtros: &HashMap<String, db::FiltroValor>,
+    vista: &str,
+    limit: usize,
+    config: &Config,
+) -> Result<db::DashboardData, String> {
+    db::dashboard(
+        conn, filtros, vista, None, 1, limit, None, None,
+        Some(&config.pending_pattern), Some(&config.signed_pattern)
+    ).map_err(|e| e.to_string())
+}
+
 pub fn exportar_excel(
     conn: &Connection,
     filtros: &HashMap<String, db::FiltroValor>,
@@ -26,10 +39,7 @@ pub fn exportar_excel(
     vista: &str,
     config: &Config,
 ) -> Result<String, String> {
-    let data = db::dashboard(
-        conn, filtros, vista, None, 1, db::constants::TABLE_LIMIT, None, None,
-        Some(&config.pending_pattern), Some(&config.signed_pattern)
-    ).map_err(|e| e.to_string())?;
+    let data = fetch_dashboard_data(conn, filtros, vista, db::constants::TABLE_LIMIT, config)?;
 
     if let Some(parent) = output_path.parent() {
         ensure_dir(parent)?;
@@ -85,19 +95,16 @@ pub fn exportar_pdf_with_screenshot(
 ) -> Result<String, String> {
     use printpdf::{BuiltinFont, Image, ImageTransform, Mm, PdfDocument};
 
-    let data = db::dashboard(
-        conn, filtros, vista, None, 1, db::constants::PDF_ROW_LIMIT, None, None,
-        Some(&config.pending_pattern), Some(&config.signed_pattern)
-    ).map_err(|e| e.to_string())?;
+    let data = fetch_dashboard_data(conn, filtros, vista, db::constants::PDF_ROW_LIMIT, config)?;
 
     if let Some(parent) = output_path.parent() {
         ensure_dir(parent)?;
     }
 
     let (doc, page1, layer1) = PdfDocument::new(
-        "Dashboard de Contrataciones",
-        Mm(297.0),
-        Mm(210.0),
+        &config.pdf.title,
+        Mm(config.pdf.page_w_mm),
+        Mm(config.pdf.page_h_mm),
         "Layer 1",
     );
 
@@ -110,7 +117,7 @@ pub fn exportar_pdf_with_screenshot(
 
     let layer = doc.get_page(page1).get_layer(layer1);
 
-    layer.use_text("Dashboard de Contrataciones", 14.0, Mm(10.0), Mm(195.0), &font_bold);
+    layer.use_text(&config.pdf.title, 14.0, Mm(10.0), Mm(195.0), &font_bold);
     layer.use_text(
         &format!("Registros: {} | Pendientes: {} | Firmados: {}",
                  data.total_general, data.total_pendientes, data.total_firmados),
@@ -130,8 +137,8 @@ pub fn exportar_pdf_with_screenshot(
     let dpi = 300.0;
     let natural_w_pt = dynamic_img.width() as f32 * 72.0 / dpi;
     let natural_h_pt = dynamic_img.height() as f32 * 72.0 / dpi;
-    let target_w_pt = Mm(277.0).into_pt().0;
-    let target_h_pt = Mm(175.0).into_pt().0;
+    let target_w_pt = Mm(config.pdf.image_w_mm).into_pt().0;
+    let target_h_pt = Mm(config.pdf.image_h_mm).into_pt().0;
     let scale = (target_w_pt / natural_w_pt).min(target_h_pt / natural_h_pt);
     print_img.add_to_layer(layer, ImageTransform {
         translate_x: Some(Mm(10.0)),
@@ -154,6 +161,7 @@ pub fn exportar_pdf_with_screenshot(
 pub fn exportar_pptx_with_screenshot(
     output_path: &Path,
     png_bytes: &[u8],
+    config: &Config,
 ) -> Result<String, String> {
     use pptx::opc::PackURI;
     use pptx::presentation::Presentation;
@@ -184,7 +192,7 @@ pub fn exportar_pptx_with_screenshot(
     let new_xml = ShapeTree::add_picture(
         &slide_part.blob, &r_id,
         Emu(0), Emu(0),
-        Emu(9_144_000), Emu(6_858_000),
+        Emu(config.pptx.image_w_emu), Emu(config.pptx.image_h_emu),
     ).map_err(|e| format!("Error agregando imagen al slide: {}", e))?;
     slide_part.blob = new_xml;
 

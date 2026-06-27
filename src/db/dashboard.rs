@@ -122,7 +122,7 @@ pub fn dashboard(
             let tb = safe_ident(base);
             let mut joins = Vec::new();
             for fk in m.fks() {
-                let alias = format!("c_{}", fk.col_id);
+                let alias = format!("{}{}", constants::FK_ALIAS_PREFIX, fk.col_id);
                 joins.push(format!(
                     "LEFT JOIN {} AS {} ON {}.{} = {}.{}",
                     safe_ident(&fk.tabla_catalogo),
@@ -154,15 +154,10 @@ pub fn dashboard(
     let por_grupo = if !grupo_actual.is_empty() && clean_identifier(&grupo_actual) {
         let p = col_prefix(modo);
         let sc = format!("{}{}", p, safe_ident(&grupo_actual));
-        let group_where = if where_sql.is_empty() {
-            "WHERE".to_string()
-        } else {
-            format!("{} AND", where_sql)
-        };
         let group_sql = format!(
-            "SELECT CAST({sc} AS TEXT), COUNT(*) {from_clause} {group_where} \
-             CAST({sc} AS TEXT) IS NOT NULL AND CAST({sc} AS TEXT) != '' \
-             GROUP BY CAST({sc} AS TEXT) ORDER BY COUNT(*) DESC LIMIT {}",
+            "SELECT group_key, COUNT(*) FROM (SELECT CAST({sc} AS TEXT) AS group_key {from_clause} {where_sql}) sub \
+             WHERE group_key IS NOT NULL AND group_key != '' \
+             GROUP BY group_key ORDER BY COUNT(*) DESC LIMIT {}",
             constants::GROUP_BY_LIMIT
         );
         let mut stmt = conn.prepare(&group_sql)?;
@@ -183,7 +178,7 @@ pub fn dashboard(
         Some(m) if !m.es_universal() => {
             col_names.iter().map(|c| {
                 if let Some(fk) = m.fks().iter().find(|fk| &fk.nombre_display == c) {
-                    let alias = format!("c_{}", fk.col_id);
+                let alias = format!("{}{}", constants::FK_ALIAS_PREFIX, fk.col_id);
                     format!("{}.{} AS \"{}\"", safe_ident(&alias), safe_ident(&fk.col_nombre), c)
                 } else {
                     format!("tb.{}", safe_ident(c))

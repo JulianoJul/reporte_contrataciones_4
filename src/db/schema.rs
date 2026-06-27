@@ -121,6 +121,8 @@ pub fn detectar_pk_columna(conn: &Connection, tabla: &str) -> SqlResult<String> 
         .unwrap_or_else(|| "rowid".to_string()))
 }
 
+/// Detecta la PK de una tabla via PRAGMA table_info.
+/// Si falla (error de BD o tabla sin PK), retorna `fallback` y loggea el error en stderr.
 pub fn obtener_pk_con_fallback(conn: &Connection, tabla: &str, fallback: &str) -> String {
     detectar_pk_columna(conn, tabla).unwrap_or_else(|e| {
         eprintln!("[schema] PK detection failed for {}: {}", tabla, e);

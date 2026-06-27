@@ -9,6 +9,43 @@ use super::schema::obtener_pk_con_fallback;
 use super::utils::{clean_identifier, safe_ident, strip_fk_prefix};
 use std::collections::HashMap;
 
+fn query_distinct_values(
+    conn: &Connection,
+    col_expr: &str,
+    from_expr: &str,
+    where_clause: Option<&str>,
+    limit: u64,
+) -> SqlResult<Vec<serde_json::Value>> {
+    let where_sql = where_clause
+        .map(|w| format!(" WHERE {}", w))
+        .unwrap_or_default();
+    let sql = format!(
+        "SELECT DISTINCT {} FROM {} {} ORDER BY 1 LIMIT {}",
+        col_expr, from_expr, where_sql, limit
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let values = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .map(|v| serde_json::json!(v))
+        .collect();
+    Ok(values)
+}
+
+fn query_min_max<T: rusqlite::types::FromSql>(
+    conn: &Connection,
+    tabla: &str,
+    col: &str,
+) -> SqlResult<(Option<T>, Option<T>)> {
+    let st = safe_ident(tabla);
+    let sc = safe_ident(col);
+    conn.query_row(
+        &format!("SELECT MIN({sc}), MAX({sc}) FROM {st}"),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+}
+
 pub fn analizar_columna(
     conn: &Connection,
     tabla: &str,
@@ -24,15 +61,11 @@ pub fn analizar_columna(
         if let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla, ac)? {
             let tc = safe_ident(&fk_info.tabla);
             let cn = safe_ident(&col_nombre);
-            let mut stmt = conn.prepare(&format!(
-                "SELECT DISTINCT {} FROM {} WHERE {} IS NOT NULL ORDER BY 1 LIMIT {}",
-                cn, tc, cn, constants::MAX_CATEGORICAL_VALUES * 2
-            ))?;
-            let valores: Vec<serde_json::Value> = stmt
-                .query_map([], |row| row.get::<_, String>(0))?
-                .filter_map(|r| r.ok())
-                .map(|v| serde_json::json!(v))
-                .collect();
+            let valores = query_distinct_values(
+                conn, &cn, &tc,
+                Some(&format!("{} IS NOT NULL", cn)),
+                constants::MAX_CATEGORICAL_VALUES * 2,
+            )?;
             let total_dist = valores.len() as u64;
             let nombre_display = strip_fk_prefix(&col.name, &ac.fk_id_prefix);
             return Ok(Some(ColumnaInfo {
@@ -52,12 +85,7 @@ pub fn analizar_columna(
 
     match col.col_type.as_str() {
         "DATE" | "DATETIME" | "TIMESTAMP" => {
-            let (min_v, max_v): (Option<String>, Option<String>) = conn
-                .query_row(
-                    &format!("SELECT MIN({sc}), MAX({sc}) FROM {st}"),
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )?;
+            let (min_v, max_v) = query_min_max::<String>(conn, tabla, &col.name)?;
             Ok(Some(ColumnaInfo {
                 nombre: col.name.clone(),
                 tipo: "date".to_string(),
@@ -74,12 +102,7 @@ pub fn analizar_columna(
         }
 
         "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" | "DECIMAL" => {
-            let (min_v, max_v): (Option<f64>, Option<f64>) = conn
-                .query_row(
-                    &format!("SELECT MIN({sc}), MAX({sc}) FROM {st}"),
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )?;
+            let (min_v, max_v) = query_min_max::<f64>(conn, tabla, &col.name)?;
             let distinct: i64 = conn
                 .query_row(
                     &format!("SELECT COUNT(DISTINCT {sc}) FROM {st}"),
@@ -88,15 +111,11 @@ pub fn analizar_columna(
                 )?;
 
             if distinct as u64 <= constants::MAX_CATEGORICAL_VALUES && min_v.is_some() {
-                let mut stmt = conn.prepare(&format!(
-                    "SELECT DISTINCT {sc} FROM {st} ORDER BY {sc} LIMIT {}",
-                    constants::MAX_CATEGORICAL_VALUES * 2
-                ))?;
-                let values: Vec<serde_json::Value> = stmt
-                    .query_map([], |row| row.get::<_, f64>(0))?
-                    .filter_map(|r| r.ok())
-                    .map(|v| serde_json::json!(v))
-                    .collect();
+                let values = query_distinct_values(
+                    conn, &sc.to_string(), &st.to_string(),
+                    None,
+                    constants::MAX_CATEGORICAL_VALUES * 2,
+                )?;
                 return Ok(Some(ColumnaInfo {
                     nombre: col.name.clone(),
                     tipo: "categorical".to_string(),
@@ -140,15 +159,11 @@ pub fn analizar_columna(
             }
 
             if distinct as u64 <= constants::MAX_CATEGORICAL_VALUES {
-                let mut stmt = conn.prepare(&format!(
-                    "SELECT DISTINCT {sc} FROM {st} ORDER BY {sc} LIMIT {}",
-                    constants::MAX_CATEGORICAL_VALUES * 2
-                ))?;
-                let values: Vec<serde_json::Value> = stmt
-                    .query_map([], |row| row.get::<_, i64>(0))?
-                    .filter_map(|r| r.ok())
-                    .map(|v| serde_json::json!(v))
-                    .collect();
+                let values = query_distinct_values(
+                    conn, &sc.to_string(), &st.to_string(),
+                    None,
+                    constants::MAX_CATEGORICAL_VALUES * 2,
+                )?;
                 return Ok(Some(ColumnaInfo {
                     nombre: col.name.clone(),
                     tipo: "categorical".to_string(),
@@ -164,12 +179,7 @@ pub fn analizar_columna(
             }));
             }
 
-            let (min_v, max_v): (Option<i64>, Option<i64>) = conn
-                .query_row(
-                    &format!("SELECT MIN({sc}), MAX({sc}) FROM {st}"),
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )?;
+            let (min_v, max_v) = query_min_max::<i64>(conn, tabla, &col.name)?;
             return Ok(Some(ColumnaInfo {
                 nombre: col.name.clone(),
                 tipo: "numeric".to_string(),
@@ -205,17 +215,11 @@ pub fn analizar_columna(
             }
 
             if distinct as u64 <= constants::MAX_CATEGORICAL_VALUES {
-                let mut stmt = conn.prepare(&format!(
-                    "SELECT DISTINCT {sc} FROM {st} \
-                     WHERE {sc} IS NOT NULL AND {sc} != '' \
-                     ORDER BY {sc} LIMIT {}",
-                    constants::MAX_CATEGORICAL_VALUES * 2
-                ))?;
-                let values: Vec<serde_json::Value> = stmt
-                    .query_map([], |row| row.get::<_, String>(0))?
-                    .filter_map(|r| r.ok())
-                    .map(|v| serde_json::json!(v))
-                    .collect();
+                let values = query_distinct_values(
+                    conn, &sc.to_string(), &st.to_string(),
+                    Some(&format!("{} IS NOT NULL AND {} != ''", sc, sc)),
+                    constants::MAX_CATEGORICAL_VALUES * 2,
+                )?;
                 Ok(Some(ColumnaInfo {
                     nombre: col.name.clone(),
                     tipo: "categorical".to_string(),
@@ -294,7 +298,7 @@ pub fn detectar_columna_estado(
             constants::STATUS_SHORT_LENGTH_THRESHOLD
         )) {
             short_values = stmt.query_row([], |row| row.get(0))
-                .unwrap_or_else(|e| { eprintln!("[db/analysis] short_values query failed: {}", e); 0 });
+                .unwrap_or_else(|e| { eprintln!("[db/analysis] short_values query failed for col '{}': {}", col, e); 0 });
         }
 
 
@@ -317,7 +321,7 @@ pub fn detectar_columna_estado(
                 &sql,
                 &[&pend_like as &dyn ToSql, &firm_like as &dyn ToSql],
                 |row| Ok((row.get(0)?, row.get(1)?)),
-            ).unwrap_or_else(|e| { eprintln!("[db/analysis] status query failed: {}", e); (0.0, 0.0) });
+            ).unwrap_or_else(|e| { eprintln!("[db/analysis] status query failed for col '{}': {}", col, e); (0.0, 0.0) });
             pend_ratio = p;
             firm_ratio = f;
         }
@@ -422,10 +426,10 @@ fn construir_mapeo_dependencia(
     }
 
     for (pk_key, fk_info_pk) in &padre_keys {
-        let pt = pk_key.split('.').next().unwrap_or("");
+        let pt = pk_key.split(constants::FK_KEY_SEPARATOR).next().unwrap_or("");
 
         for (fk_key, fk_info_fk) in &hijo_keys {
-            let ht = fk_key.split('.').next().unwrap_or("");
+            let ht = fk_key.split(constants::FK_KEY_SEPARATOR).next().unwrap_or("");
 
             if fk_info_fk.tabla != fk_info_pk.tabla {
                 continue;

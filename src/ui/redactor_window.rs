@@ -7,7 +7,8 @@ pub fn ui_redactor_window(app: &mut crate::app::App, ctx: &Context) {
         .default_size([600.0, 400.0])
         .show(ctx, |ui| {
             ui.vertical(|ui| {
-                ui.label("Plantilla (usa #total, #pendientes, #firmados, #NombreColumna):");
+                let ph = app.config.analyse.redactor_placeholders.join(", ");
+                ui.label(format!("Plantilla (usa {}, #NombreColumna):", ph));
 
                 ui.push_id("template_edit", |ui| {
                     ui.add(

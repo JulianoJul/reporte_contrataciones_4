@@ -2,6 +2,40 @@ use std::path::{Path, PathBuf};
 use crate::db::AnalyseConfig;
 use crate::db::constants;
 
+pub struct PdfConfig {
+    pub title: String,
+    pub page_w_mm: f32,
+    pub page_h_mm: f32,
+    pub image_w_mm: f32,
+    pub image_h_mm: f32,
+}
+
+impl Default for PdfConfig {
+    fn default() -> Self {
+        Self {
+            title: "Dashboard de Contrataciones".to_string(),
+            page_w_mm: 297.0,
+            page_h_mm: 210.0,
+            image_w_mm: 277.0,
+            image_h_mm: 175.0,
+        }
+    }
+}
+
+pub struct PptxConfig {
+    pub image_w_emu: i64,
+    pub image_h_emu: i64,
+}
+
+impl Default for PptxConfig {
+    fn default() -> Self {
+        Self {
+            image_w_emu: 9_144_000,
+            image_h_emu: 6_858_000,
+        }
+    }
+}
+
 pub struct Config {
     pub default_db: Option<PathBuf>,
     pub output_dir: PathBuf,
@@ -10,6 +44,8 @@ pub struct Config {
     pub signed_pattern: String,
     pub signed_label: String,
     pub analyse: AnalyseConfig,
+    pub pdf: PdfConfig,
+    pub pptx: PptxConfig,
 }
 
 impl Config {
@@ -61,6 +97,14 @@ impl Config {
             },
             fallback_pk_name: std::env::var("FALLBACK_PK_NAME")
                 .unwrap_or_else(|_| dflt.fallback_pk_name.clone()),
+            redactor_placeholders: {
+                let s = std::env::var("REDACTOR_PLACEHOLDERS")
+                    .unwrap_or_else(|_| dflt.redactor_placeholders.join(","));
+                s.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            },
         };
 
         Config {
@@ -71,6 +115,8 @@ impl Config {
             signed_pattern,
             signed_label,
             analyse,
+            pdf: PdfConfig::default(),
+            pptx: PptxConfig::default(),
         }
     }
 }

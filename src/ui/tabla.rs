@@ -5,7 +5,9 @@ pub fn ui_tabla(app: &mut crate::app::App, ui: &mut egui::Ui) {
     let col_names = app.data.columnas_tabla.clone();
     let rows = app.data.tabla.clone();
     if col_names.is_empty() {
-        ui.label("Sin datos");
+        if app.error.is_none() {
+            ui.label("Sin datos");
+        }
         return;
     }
 

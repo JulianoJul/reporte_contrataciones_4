@@ -7,7 +7,7 @@ use crate::db::analysis;
 use crate::config::Config;
 use crate::redactor::Redactor;
 use crate::ui::charts::{self as chart_ui, ChartsData};
-use crate::ui::theme::{self, C_BG, C_SURF, C_MUTED, C_GREY, C_DKBLUE, C_RED, C_GREEN, C_ORANGE};
+use crate::ui::theme::{self, C_BG, C_SURF, C_MUTED, C_GREY, C_DKBLUE, C_RED, C_GREEN};
 
 pub enum ExportFormat {
     Pdf,
@@ -154,38 +154,54 @@ impl App {
         self.needs_refresh = true;
     }
 
+    fn init_categorical_filter_data(&mut self, nombre: &str) {
+        self.filtros.insert(nombre.to_string(),
+            FiltroValor::Categorical { selected: constants::FILTRO_TODOS.to_string() });
+    }
+
+    fn init_categorical_fk_filter_data(&mut self, nombre: &str, col_original: &str, tabla_catalogo: &str, col_nombre: &str) {
+        self.filtros.insert(nombre.to_string(),
+            FiltroValor::CategoricalFK {
+                selected: constants::FILTRO_TODOS.to_string(),
+                col_original: col_original.to_string(),
+                tabla_catalogo: tabla_catalogo.to_string(),
+                col_nombre: col_nombre.to_string(),
+            });
+    }
+
+    fn init_date_filter_data(&mut self, nombre: &str) {
+        self.filtros.insert(nombre.to_string(),
+            FiltroValor::Date { desde: String::new(), hasta: String::new() });
+    }
+
+    fn init_numeric_filter_data(&mut self, nombre: &str, min: f64, max: f64) {
+        self.filtros.insert(nombre.to_string(),
+            FiltroValor::Numeric {
+                min, max,
+                orig_min: min, orig_max: max,
+            });
+    }
+
+    fn init_text_search_filter_data(&mut self, nombre: &str) {
+        self.filtros.insert(nombre.to_string(),
+            FiltroValor::TextSearch { query: String::new() });
+    }
+
     fn init_filtros(&mut self) {
         self.filtros.clear();
-        for fi in &self.filtros_info {
+        let filtros = self.filtros_info.clone();
+        for fi in &filtros {
             match fi.tipo.as_str() {
-                "categorical" => {
-                    self.filtros.insert(fi.nombre.clone(),
-                        FiltroValor::Categorical { selected: constants::FILTRO_TODOS.to_string() });
-                }
-                "categorical_fk" => {
-                    self.filtros.insert(fi.nombre.clone(),
-                        FiltroValor::CategoricalFK {
-                            selected: constants::FILTRO_TODOS.to_string(),
-                            col_original: fi.col_original.clone().unwrap_or_default(),
-                            tabla_catalogo: fi.tabla_catalogo.clone().unwrap_or_default(),
-                            col_nombre: fi.col_nombre_catalogo.clone().unwrap_or_default(),
-                        });
-                }
-                "date" => {
-                    self.filtros.insert(fi.nombre.clone(),
-                        FiltroValor::Date { desde: String::new(), hasta: String::new() });
-                }
-                "numeric" => {
-                    self.filtros.insert(fi.nombre.clone(),
-                        FiltroValor::Numeric {
-                            min: fi.min.unwrap_or(0.0), max: fi.max.unwrap_or(1.0),
-                            orig_min: fi.min.unwrap_or(0.0), orig_max: fi.max.unwrap_or(1.0),
-                        });
-                }
-                "text_search" => {
-                    self.filtros.insert(fi.nombre.clone(),
-                        FiltroValor::TextSearch { query: String::new() });
-                }
+                "categorical" => self.init_categorical_filter_data(&fi.nombre),
+                "categorical_fk" => self.init_categorical_fk_filter_data(
+                    &fi.nombre,
+                    fi.col_original.as_deref().unwrap_or(""),
+                    fi.tabla_catalogo.as_deref().unwrap_or(""),
+                    fi.col_nombre_catalogo.as_deref().unwrap_or(""),
+                ),
+                "date" => self.init_date_filter_data(&fi.nombre),
+                "numeric" => self.init_numeric_filter_data(&fi.nombre, fi.min.unwrap_or(0.0), fi.max.unwrap_or(1.0)),
+                "text_search" => self.init_text_search_filter_data(&fi.nombre),
                 _ => {}
             }
         }
@@ -194,12 +210,15 @@ impl App {
     fn refresh_data(&mut self) {
         let conn = match self.conn.as_ref() {
             Some(c) => c,
-            None => return,
+            None => { eprintln!("[app] refresh_data skipped: no DB connection"); return; }
         };
         if self.vista.is_empty() {
+            eprintln!("[app] refresh_data skipped: no vista selected");
             self.data = DashboardData::default();
             return;
         }
+        eprintln!("[app] refresh_data: vista={}, page={}, group_by={:?}, filtros={}",
+            self.vista, self.data.current_page, self.group_by, self.filtros.len());
         self.is_loading = true;
         match db::dashboard(
             conn, &self.filtros, &self.vista,
@@ -208,8 +227,16 @@ impl App {
             self.status_col.as_deref(), Some(&self.modo),
             Some(&self.config.pending_pattern), Some(&self.config.signed_pattern),
         ) {
-            Ok(data) => { self.data = data; self.error = None; }
-            Err(e) => { self.error = Some(format!("Error cargando datos: {}", e)); }
+            Ok(data) => {
+                eprintln!("[app] refresh_data OK: total={}, rows={}, pend={}, firm={}",
+                    data.total_general, data.tabla.len(), data.total_pendientes, data.total_firmados);
+                self.data = data;
+                self.error = None;
+            }
+            Err(e) => {
+                eprintln!("[app] refresh_data ERROR: {}", e);
+                self.error = Some(format!("Error cargando datos: {}", e));
+            }
         }
         self.is_loading = false;
         self.last_update = chrono::Local::now().format("%H:%M:%S").to_string();
@@ -372,11 +399,10 @@ impl App {
                 }
 
                 // Metric cards
-                ui.columns(4, |cols| {
+                ui.columns(3, |cols| {
                     crate::ui::widgets::metric_card(&mut cols[0], &self.config.pending_label, self.data.total_pendientes, C_RED);
                     crate::ui::widgets::metric_card(&mut cols[1], &self.config.signed_label, self.data.total_firmados, C_GREEN);
                     crate::ui::widgets::metric_card(&mut cols[2], "Total", self.data.total_general, C_DKBLUE);
-                    crate::ui::widgets::metric_card(&mut cols[3], "Universo", self.data.total_matching, C_ORANGE);
                 });
                 ui.separator();
 
@@ -469,7 +495,7 @@ impl eframe::App for App {
                         }
                     } else if let Some(ExportFormat::Pptx) = format {
                         let p = self.config.output_dir.join("dashboard.pptx");
-                        match crate::export::exportar_pptx_with_screenshot(&p, &png_data) {
+                        match crate::export::exportar_pptx_with_screenshot(&p, &png_data, &self.config) {
                             Ok(path) => { let _ = open::that(path); }
                             Err(e) => self.error = Some(e),
                         }

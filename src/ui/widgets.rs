@@ -4,6 +4,10 @@ use chrono::{NaiveDate, Datelike, Local, Duration};
 use crate::db::constants::{DATE_FORMAT, DATE_FORMAT_HINT};
 use crate::ui::theme::{C_SURF, C_MUTED, C_GREY, C_BG};
 
+fn safe_date_parse(date_str: &str, fallback: NaiveDate) -> NaiveDate {
+    NaiveDate::parse_from_str(date_str, DATE_FORMAT).unwrap_or(fallback)
+}
+
 pub fn metric_card(ui: &mut egui::Ui, title: &str, value: u64, accent: Color32) {
     let height = 64.0;
     let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
@@ -46,7 +50,7 @@ pub fn date_picker_widget(ui: &mut egui::Ui, date_str: &mut String, _label: &str
     egui::popup::popup_below_widget(ui, egui::Id::new(popup_id), &resp, PopupCloseBehavior::CloseOnClick, |ui: &mut egui::Ui| {
         ui.set_min_width(200.0);
         let today = Local::now().naive_local().date();
-        let current = NaiveDate::parse_from_str(date_str, DATE_FORMAT).unwrap_or(today);
+        let current = safe_date_parse(date_str, today);
 
         let mut year = current.year();
         let mut month = current.month();
@@ -68,7 +72,7 @@ pub fn date_picker_widget(ui: &mut egui::Ui, date_str: &mut String, _label: &str
                 NaiveDate::from_ymd_opt(year + 1, 1, 1)
             } else {
                 NaiveDate::from_ymd_opt(year, month + 1, 1)
-            }.unwrap_or(today + Duration::days(32));
+            }.unwrap_or_else(|| today + Duration::days(32));
             (next - Duration::days(1)).day()
         };
         let start_wd = first.weekday().num_days_from_monday() as usize;
