@@ -1,6 +1,5 @@
 target/
 output/
-combined.txt
 *.db
 *.sqlite
 .DS_Store

@@ -1,0 +1,3429 @@
+=== Cargo.toml ===
+[package]
+name = "reporte_contrataciones_4"
+version = "0.1.0"
+edition = "2021"
+description = "Reporte de Contrataciones — egui + sqlite"
+
+[dependencies]
+eframe = "0.29"
+egui = "0.29"
+egui_extras = "0.29"
+egui_plot = "0.29"
+rusqlite = { version = "0.34", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+rfd = "0.15"
+open = "5"
+rust_xlsxwriter = "0.82"
+printpdf = { version = "0.7", features = ["embedded_images"] }
+image = "0.24"
+pptx = "0.1.0"
+=== src/app.rs ===
+use std::collections::HashMap;
+use rusqlite::Connection;
+use eframe::egui::{self, Context, Rounding, Stroke, Margin};
+
+use crate::db::{self, SchemaMetadata, FiltroValor, FiltroInfo, DashboardData, ModoOptimizacion, constants};
+use crate::db::analysis;
+use crate::db::utils::display_name;
+use crate::config::Config;
+use crate::redactor::Redactor;
+use crate::ui::charts::{self as chart_ui, ChartsData};
+use crate::ui::theme::{self, C_BG, C_SURF, C_MUTED, C_GREY, C_DKBLUE, C_RED, C_GREEN};
+
+pub enum ExportFormat {
+    Pdf,
+    Pptx,
+}
+
+pub struct App {
+    pub(crate) conn: Option<Connection>,
+    pub(crate) config: Config,
+    pub(crate) meta: SchemaMetadata,
+    pub(crate) vista: String,
+    pub(crate) tablas_disponibles: Vec<String>,
+    pub(crate) modo: ModoOptimizacion,
+    pub(crate) filtros: HashMap<String, FiltroValor>,
+    pub(crate) filtros_info: Vec<FiltroInfo>,
+    pub(crate) data: DashboardData,
+    pub(crate) status_col: Option<String>,
+    pub(crate) group_by: String,
+    pub(crate) error: Option<String>,
+    pub(crate) redactor: Redactor,
+    pub(crate) redactor_open: bool,
+    pub(crate) needs_refresh: bool,
+    pub(crate) needs_load: bool,
+    pub(crate) is_loading: bool,
+    pub(crate) last_update: String,
+    pub(crate) pending_export: Option<ExportFormat>,
+}
+
+impl App {
+    pub fn new() -> Self {
+        let config = Config::detect();
+        let mut app = App {
+            conn: None,
+            config,
+            meta: SchemaMetadata::default(),
+            vista: String::new(),
+            tablas_disponibles: vec![],
+            modo: ModoOptimizacion::Universal,
+            filtros: HashMap::new(),
+            filtros_info: vec![],
+            data: DashboardData::default(),
+            status_col: None,
+            group_by: String::new(),
+            error: None,
+            redactor: Redactor::new(),
+            redactor_open: false,
+            needs_refresh: false,
+            needs_load: false,
+            is_loading: false,
+            last_update: String::new(),
+            pending_export: None,
+        };
+        if let Some(ref db_path) = app.config.default_db.clone() {
+            app.open_database(db_path);
+        }
+        app
+    }
+
+    fn open_database(&mut self, path: &std::path::Path) {
+        match Connection::open(path) {
+            Ok(conn) => {
+                self.conn = Some(conn);
+                let Some(ref conn) = self.conn else { return; };
+                self.tablas_disponibles = listar_tablas_vistas(conn);
+                match db::explorar(conn, &self.config.analyse) {
+                    Ok(meta) => {
+                        self.meta = meta;
+                        let vista = self.meta.vista_principal.clone();
+                        if vista.is_empty() {
+                            if let Some(t) = self.tablas_disponibles.first().cloned() {
+                                self.seleccionar_tabla(t);
+                            }
+                        } else {
+                            self.seleccionar_tabla(vista);
+                        }
+                    }
+                    Err(e) => self.error = Some(format!("Error explorando BD: {}", e)),
+                }
+            }
+            Err(e) => self.error = Some(format!("Error abriendo BD: {}", e)),
+        }
+    }
+
+    fn clear_selection(&mut self) {
+        self.vista.clear();
+        self.meta = SchemaMetadata::default();
+        self.filtros_info.clear();
+        self.filtros.clear();
+        self.data = DashboardData::default();
+        self.status_col = None;
+    }
+
+    fn load_and_analyse_table(&mut self, tabla: &str) {
+        let conn = match self.conn.as_ref() {
+            Some(c) => c,
+            None => return,
+        };
+        let cols_raw = match db::schema::obtener_columnas(conn, tabla) {
+            Ok(c) => c,
+            Err(e) => { self.error = Some(format!("Error leyendo columnas de {}: {}", tabla, e)); return; }
+        };
+        let all_tablas = match db::schema::listar_tablas(conn) {
+            Ok(t) => t,
+            Err(e) => { self.error = Some(format!("Error listando tablas: {}", e)); return; }
+        };
+        let fk_pairs = match db::schema::analizar_foreign_keys(conn, &all_tablas) {
+            Ok(f) => f,
+            Err(e) => { self.error = Some(format!("Error analizando FKs: {}", e)); return; }
+        };
+        let mut columnas = Vec::new();
+        for col in &cols_raw {
+            if col.pk { continue; }
+            if let Ok(Some(info)) = db::analysis::analizar_columna(conn, tabla, col, &fk_pairs, &self.config.analyse) {
+                columnas.push(info);
+            }
+        }
+        self.meta = SchemaMetadata {
+            vista_principal: tabla.to_string(),
+            tablas: all_tablas,
+            columnas,
+            dependencias: vec![],
+        };
+        let col_names: Vec<String> = self.meta.columnas.iter().map(|c| c.nombre.clone()).collect();
+        self.status_col = analysis::detectar_columna_estado(conn, tabla, &col_names,
+            &self.config.pending_pattern, &self.config.signed_pattern)
+            .ok().flatten();
+        self.filtros_info = db::extraer_filtros_info(&self.meta);
+    }
+
+    fn seleccionar_tabla(&mut self, tabla: String) {
+        if tabla.is_empty() {
+            self.clear_selection();
+            return;
+        }
+        let conn = match self.conn.as_ref() {
+            Some(c) => c,
+            None => return,
+        };
+        self.vista = tabla.clone();
+        self.modo = match db::detectar_patron_optimizable(conn, &tabla, &self.config.analyse) {
+            Ok(m) => m,
+            Err(e) => {
+                let msg = format!("Error detectando patrón para {}: {}", tabla, e);
+                eprintln!("[app] {}", msg);
+                self.error = Some(msg);
+                ModoOptimizacion::Universal
+            }
+        };
+        self.load_and_analyse_table(&tabla);
+        self.init_filtros();
+        self.needs_refresh = true;
+    }
+
+    fn init_filtros(&mut self) {
+        self.filtros.clear();
+        let filtros = self.filtros_info.clone();
+        for fi in &filtros {
+            let valor = match fi.tipo.as_str() {
+                "categorical" => FiltroValor::Categorical { selected: constants::FILTRO_TODOS.to_string() },
+                "categorical_fk" => FiltroValor::CategoricalFK {
+                    selected: constants::FILTRO_TODOS.to_string(),
+                    col_original: fi.col_original.clone().unwrap_or_default(),
+                    tabla_catalogo: fi.tabla_catalogo.clone().unwrap_or_default(),
+                    col_nombre: fi.col_nombre_catalogo.clone().unwrap_or_default(),
+                },
+                "date" => FiltroValor::Date { desde: String::new(), hasta: String::new() },
+                "numeric" => {
+                    let min = fi.min.unwrap_or(0.0);
+                    let max = fi.max.unwrap_or(1.0);
+                    FiltroValor::Numeric { min, max, orig_min: min, orig_max: max }
+                }
+                "text_search" => FiltroValor::TextSearch { query: String::new() },
+                _ => continue,
+            };
+            self.filtros.insert(fi.nombre.clone(), valor);
+        }
+    }
+
+    fn refresh_data(&mut self) {
+        let conn = match self.conn.as_ref() {
+            Some(c) => c,
+            None => { eprintln!("[app] refresh_data skipped: no DB connection"); return; }
+        };
+        if self.vista.is_empty() {
+            eprintln!("[app] refresh_data skipped: no vista selected");
+            self.data = DashboardData::default();
+            return;
+        }
+        eprintln!("[app] refresh_data: vista={}, page={}, group_by={:?}, filtros={}",
+            self.vista, self.data.current_page, self.group_by, self.filtros.len());
+        self.is_loading = true;
+        match db::dashboard(
+            conn, &self.filtros, &self.vista,
+            if self.group_by.is_empty() { None } else { Some(self.group_by.as_str()) },
+            self.data.current_page, self.data.page_size,
+            self.status_col.as_deref(), Some(&self.modo),
+            Some(&self.config.pending_pattern), Some(&self.config.signed_pattern),
+        ) {
+            Ok(data) => {
+                eprintln!("[app] refresh_data OK: total={}, rows={}, pend={}, firm={}",
+                    data.total_general, data.tabla.len(), data.total_pendientes, data.total_firmados);
+                self.data = data;
+                self.error = None;
+            }
+            Err(e) => {
+                eprintln!("[app] refresh_data ERROR: {}", e);
+                self.error = Some(format!("Error cargando datos: {}", e));
+            }
+        }
+        self.is_loading = false;
+        self.last_update = chrono::Local::now().format("%H:%M:%S").to_string();
+    }
+
+    // ── Sidebar ──────────────────────────────────────────────
+    fn ui_sidebar(&mut self, ctx: &Context) {
+        crate::ui::sidebar::ui_sidebar(self, ctx);
+    }
+
+    // ── Top Bar ──────────────────────────────────────────────
+    fn ui_top_panel(&mut self, ctx: &Context) {
+        egui::TopBottomPanel::top("top_panel")
+            .frame(egui::Frame {
+                inner_margin: Margin::symmetric(8.0, 4.0),
+                outer_margin: Margin::default(),
+                rounding: Rounding::ZERO,
+                shadow: egui::Shadow::NONE,
+                fill: C_SURF,
+                stroke: Stroke::new(1.0, C_MUTED),
+            })
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Explorador BD");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if self.conn.is_some() {
+                            if ui.button("Redactor").on_hover_text("Editor de plantillas").clicked() {
+                                self.redactor_open = !self.redactor_open;
+                            }
+                            if ui.button("Output").on_hover_text("Abrir carpeta de exportaciones").clicked() {
+                                let _ = crate::export::abrir_carpeta_output(&self.config);
+                            }
+                            if ui.button("PDF").on_hover_text("Exportar dashboard como PDF (con captura)").clicked() {
+                                self.pending_export = Some(ExportFormat::Pdf);
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+                            }
+                            if ui.button("PPTX").on_hover_text("Exportar dashboard como PPTX (con captura)").clicked() {
+                                self.pending_export = Some(ExportFormat::Pptx);
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot);
+                            }
+                            if ui.button("Excel").on_hover_text("Exportar a Excel").clicked() {
+                                if let Some(ref conn) = self.conn {
+                                    let p = self.config.output_dir.join(&self.config.default_excel_name);
+                                    match crate::export::exportar_excel(conn, &self.filtros, &p, &self.vista, &self.config) {
+                                        Ok(p) => { let _ = open::that(p); }
+                                        Err(e) => self.error = Some(e),
+                                    }
+                                }
+                            }
+                        }
+                        if ui.button("Abrir BD").on_hover_text("Seleccionar base de datos").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("SQLite", &["db", "sqlite", "sqlite3"])
+                                .pick_file()
+                            {
+                                self.open_database(&path);
+                            }
+                        }
+                    });
+                });
+            });
+    }
+
+    // ── Status Bar ───────────────────────────────────────────
+    fn ui_status_bar(&mut self, ctx: &Context) {
+        egui::TopBottomPanel::bottom("status_bar")
+            .frame(egui::Frame {
+                inner_margin: Margin::symmetric(8.0, 3.0),
+                outer_margin: Margin::default(),
+                rounding: Rounding::ZERO,
+                shadow: egui::Shadow::NONE,
+                fill: C_SURF,
+                stroke: Stroke::new(1.0, C_MUTED),
+            })
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if self.conn.is_some() {
+                        ui.label(egui::RichText::new(format!("Ultima act: {}", self.last_update)).color(C_GREY));
+                        ui.separator();
+                        ui.label(egui::RichText::new(format!("Registros: {}", self.data.total_general)).color(C_GREY));
+                        if self.data.total_general > self.data.page_size as u64 {
+                            ui.separator();
+                            ui.label(egui::RichText::new(format!("Mostrando: {}", self.data.tabla.len())).color(C_GREY));
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(&display_name(&self.vista)).color(C_DKBLUE));
+                        });
+                    } else {
+                        ui.label(egui::RichText::new("Sin base de datos abierta").color(C_GREY));
+                    }
+                });
+            });
+    }
+
+    // ── Central Panel ────────────────────────────────────────
+    fn ui_central_panel(&mut self, ctx: &Context) {
+        egui::CentralPanel::default()
+            .frame(egui::Frame {
+                inner_margin: Margin::symmetric(10.0, 8.0),
+                outer_margin: Margin::default(),
+                rounding: Rounding::ZERO,
+                shadow: egui::Shadow::NONE,
+                fill: C_BG,
+                stroke: Stroke::NONE,
+            })
+            .show(ctx, |ui| {
+                if self.conn.is_none() {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(80.0);
+                        ui.heading("Abrir una base de datos para comenzar");
+                        if ui.button("Abrir BD").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("SQLite", &["db", "sqlite", "sqlite3"])
+                                .pick_file() { self.open_database(&path); }
+                        }
+                    });
+                    return;
+                }
+
+                // Error banner
+                if let Some(ref err) = self.error.clone() {
+                    egui::Frame::none()
+                        .fill(C_RED.linear_multiply(0.1))
+                        .stroke(egui::Stroke::new(1.0, C_RED))
+                        .rounding(4.0)
+                        .inner_margin(Margin::same(8.0))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(err).color(C_RED).strong());
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("✕").clicked() { self.error = None; }
+                                });
+                            });
+                        });
+                    ui.add_space(8.0);
+                }
+
+                // Table/view selector + refresh
+                ui.horizontal(|ui| {
+                    ui.label("Tabla / Vista:");
+                    let prev = self.vista.clone();
+                    egui::ComboBox::from_id_salt("tabla_selector")
+                        .width(250.0)
+                        .selected_text(if self.vista.is_empty() { "—".to_string() } else { display_name(&self.vista) })
+                        .show_ui(ui, |ui| {
+                            for t in &self.tablas_disponibles {
+                                ui.selectable_value(&mut self.vista, t.clone(), display_name(t));
+                            }
+                        });
+                    if prev != self.vista { self.seleccionar_tabla(self.vista.clone()); }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Refrescar").clicked() { self.needs_refresh = true; }
+                    });
+                });
+                ui.separator();
+
+                if self.vista.is_empty() {
+                    ui.label("Selecciona una tabla o vista del listado.");
+                    return;
+                }
+
+                // Metric cards
+                let cards = [
+                    (self.config.pending_label.as_str(), self.data.total_pendientes, C_RED),
+                    (self.config.signed_label.as_str(), self.data.total_firmados, C_GREEN),
+                    ("Total", self.data.total_general, C_DKBLUE),
+                ];
+                ui.columns(cards.len(), |cols| {
+                    for (i, (label, value, color)) in cards.iter().enumerate() {
+                        crate::ui::widgets::metric_card(&mut cols[i], label, *value, *color);
+                    }
+                });
+                ui.separator();
+
+                // Group-by selector
+                ui.horizontal(|ui| {
+                    ui.label("Agrupar por:");
+                    let prev = self.group_by.clone();
+                    egui::ComboBox::from_id_salt("group_by")
+                        .selected_text(if self.group_by.is_empty() { "Ninguno".to_string() } else { display_name(&self.group_by) })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.group_by, String::new(), "Ninguno");
+                            for col in &self.data.columnas_tabla {
+                                ui.selectable_value(&mut self.group_by, col.clone(), display_name(&col));
+                            }
+                        });
+                    if prev != self.group_by { self.needs_refresh = true; }
+                });
+                ui.separator();
+
+                // Charts
+                if !self.data.por_grupo.is_empty() {
+                    chart_ui::show_charts(ui, &ChartsData {
+                        por_grupo: &self.data.por_grupo,
+                    });
+                    ui.separator();
+                }
+
+                // Data table (renders beneath loading overlay)
+                crate::ui::tabla::ui_tabla(self, ui);
+
+                // Loading overlay — semi-transparent on top of existing data
+                if self.is_loading {
+                    let overlay_rect = ui.max_rect();
+                    ui.painter().rect_filled(overlay_rect, egui::Rounding::ZERO, egui::Color32::from_black_alpha(180));
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(overlay_rect.height() / 3.0);
+                        ui.add(egui::Spinner::new().size(48.0));
+                        ui.label("Cargando...");
+                    });
+                }
+            });
+    }
+
+    // ── Redactor ─────────────────────────────────────────────
+    fn ui_redactor_window(&mut self, ctx: &Context) {
+        crate::ui::redactor_window::ui_redactor_window(self, ctx);
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        ctx.set_visuals(theme::nord_light());
+
+        if self.needs_load {
+            self.needs_load = false;
+            self.refresh_data();
+        }
+
+        self.ui_status_bar(ctx);
+        self.ui_top_panel(ctx);
+        self.ui_sidebar(ctx);
+        self.ui_central_panel(ctx);
+        self.ui_redactor_window(ctx);
+
+        // Process screenshot for export
+        if self.pending_export.is_some() {
+            let events = ctx.input(|i| i.events.clone());
+            for event in &events {
+                if let egui::Event::Screenshot { image, .. } = event {
+                    let format = self.pending_export.take();
+                    let png_data = crate::export::process_screenshot(image.as_ref());
+                    if let Some(ExportFormat::Pdf) = format {
+                        if let Some(ref conn) = self.conn {
+                            let p = self.config.output_dir.join(&self.config.default_pdf_name);
+                            match crate::export::exportar_pdf_with_screenshot(conn, &self.filtros, &p, &self.vista, &self.config, &png_data) {
+                                Ok(path) => { let _ = open::that(path); }
+                                Err(e) => self.error = Some(e),
+                            }
+                        }
+                    } else if let Some(ExportFormat::Pptx) = format {
+                        let p = self.config.output_dir.join(&self.config.default_pptx_name);
+                        match crate::export::exportar_pptx_with_screenshot(&p, &png_data, &self.config) {
+                            Ok(path) => { let _ = open::that(path); }
+                            Err(e) => self.error = Some(e),
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        if self.needs_refresh {
+            self.needs_refresh = false;
+            self.needs_load = true;
+            ctx.request_repaint();
+        }
+    }
+}
+
+fn listar_tablas_vistas(conn: &Connection) -> Vec<String> {
+    let mut items = Vec::new();
+    if let Ok(tablas) = db::schema::listar_tablas(conn) { items.extend(tablas); }
+    if let Ok(vistas) = db::schema::listar_vistas(conn) { items.extend(vistas); }
+    items.sort(); items.dedup(); items
+}
+=== src/config.rs ===
+use std::path::{Path, PathBuf};
+use crate::db::AnalyseConfig;
+use crate::db::constants;
+
+pub struct PdfConfig {
+    pub title: String,
+    pub page_w_mm: f32,
+    pub page_h_mm: f32,
+    pub image_w_mm: f32,
+    pub image_h_mm: f32,
+}
+
+impl Default for PdfConfig {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            page_w_mm: 297.0,
+            page_h_mm: 210.0,
+            image_w_mm: 277.0,
+            image_h_mm: 175.0,
+        }
+    }
+}
+
+pub struct PptxConfig {
+    pub image_w_emu: i64,
+    pub image_h_emu: i64,
+}
+
+impl Default for PptxConfig {
+    fn default() -> Self {
+        Self {
+            image_w_emu: 9_144_000,
+            image_h_emu: 6_858_000,
+        }
+    }
+}
+
+pub struct Config {
+    pub default_db: Option<PathBuf>,
+    pub output_dir: PathBuf,
+    pub pending_pattern: String,
+    pub pending_label: String,
+    pub signed_pattern: String,
+    pub signed_label: String,
+    pub analyse: AnalyseConfig,
+    pub pdf: PdfConfig,
+    pub pptx: PptxConfig,
+    pub default_excel_name: String,
+    pub default_pdf_name: String,
+    pub default_pptx_name: String,
+}
+
+impl Config {
+    pub fn detect() -> Self {
+        let project_root = detect_project_root();
+        let default_db = find_default_db(&project_root);
+        let output_dir = project_root.join("output");
+
+        let pending_pattern = std::env::var("PENDING_PATTERN")
+            .unwrap_or_else(|_| constants::DEFAULT_PENDING_PATTERN.to_string());
+        let pending_label = std::env::var("PENDING_LABEL")
+            .unwrap_or_else(|_| "Pendientes".to_string());
+        let signed_pattern = std::env::var("SIGNED_PATTERN")
+            .unwrap_or_else(|_| constants::DEFAULT_SIGNED_PATTERN.to_string());
+        let signed_label = std::env::var("SIGNED_LABEL")
+            .unwrap_or_else(|_| "Firmados".to_string());
+
+        let dflt = AnalyseConfig::default();
+        let analyse = AnalyseConfig {
+            catalog_prefix: std::env::var("CATALOG_PREFIX")
+                .unwrap_or_else(|_| dflt.catalog_prefix.clone()),
+            fk_id_prefix: std::env::var("FK_ID_PREFIX")
+                .unwrap_or_else(|_| dflt.fk_id_prefix.clone()),
+            preferred_name_cols: {
+                let s = std::env::var("PREFERRED_NAME_COLS")
+                    .unwrap_or_else(|_| dflt.preferred_name_cols.join(","));
+                s.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            },
+            exclude_id_prefix: std::env::var("EXCLUDE_ID_PREFIX")
+                .unwrap_or_else(|_| dflt.exclude_id_prefix.clone()),
+            exclude_name_cols: {
+                let s = std::env::var("EXCLUDE_NAME_COLS")
+                    .unwrap_or_else(|_| dflt.exclude_name_cols.join(","));
+                s.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            },
+            view_keywords: {
+                let s = std::env::var("VIEW_KEYWORDS")
+                    .unwrap_or_else(|_| dflt.view_keywords.join(","));
+                s.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            },
+            fallback_pk_name: std::env::var("FALLBACK_PK_NAME")
+                .unwrap_or_else(|_| dflt.fallback_pk_name.clone()),
+            redactor_placeholders: {
+                let s = std::env::var("REDACTOR_PLACEHOLDERS")
+                    .unwrap_or_else(|_| dflt.redactor_placeholders.join(","));
+                s.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            },
+        };
+
+        let pdf_title = std::env::var("PDF_TITLE").unwrap_or_else(|_| "Dashboard de Contrataciones".to_string());
+
+        Config {
+            default_db,
+            output_dir,
+            pending_pattern,
+            pending_label,
+            signed_pattern,
+            signed_label,
+            analyse,
+            pdf: PdfConfig { title: pdf_title, ..PdfConfig::default() },
+            pptx: PptxConfig {
+                image_w_emu: std::env::var("PPTX_IMAGE_W_EMU").ok().and_then(|s| s.parse().ok()).unwrap_or(9_144_000),
+                image_h_emu: std::env::var("PPTX_IMAGE_H_EMU").ok().and_then(|s| s.parse().ok()).unwrap_or(6_858_000),
+            },
+            default_excel_name: std::env::var("DEFAULT_EXCEL_NAME").unwrap_or_else(|_| constants::DEFAULT_EXCEL_NAME.to_string()),
+            default_pdf_name: std::env::var("DEFAULT_PDF_NAME").unwrap_or_else(|_| constants::DEFAULT_PDF_NAME.to_string()),
+            default_pptx_name: std::env::var("DEFAULT_PPTX_NAME").unwrap_or_else(|_| constants::DEFAULT_PPTX_NAME.to_string()),
+        }
+    }
+}
+
+fn detect_project_root() -> PathBuf {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    if exe_dir.join("data").exists() {
+        exe_dir
+    } else if PathBuf::from("data").exists() {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        exe_dir
+    }
+}
+
+fn find_default_db(project_root: &Path) -> Option<PathBuf> {
+    let data_dir = project_root.join("data");
+    if !data_dir.exists() {
+        return None;
+    }
+    crate::db::utils::db_paths_in(&data_dir).into_iter().next()
+}
+=== src/export.rs ===
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::BufWriter;
+use std::path::Path;
+
+use crate::config::Config;
+use crate::db;
+use rusqlite::Connection;
+
+pub fn process_screenshot(img: &egui::ColorImage) -> Vec<u8> {
+    let w = img.width();
+    let h = img.height();
+    let raw: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+    let rgba = image::RgbaImage::from_raw(w as u32, h as u32, raw);
+    let mut buf = std::io::Cursor::new(Vec::new());
+    if let Some(rgba_img) = rgba {
+        let _ = rgba_img.write_to(&mut buf, image::ImageFormat::Png);
+    }
+    buf.into_inner()
+}
+
+fn ensure_dir(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|e| format!("Error creando directorio: {}", e))
+}
+
+pub fn abrir_carpeta_output(config: &Config) -> Result<(), String> {
+    let path = &config.output_dir;
+    if !path.exists() {
+        ensure_dir(path)?;
+    }
+    open::that(path).map_err(|e| format!("Error abriendo carpeta: {}", e))
+}
+
+fn fetch_dashboard_data(
+    conn: &Connection,
+    filtros: &HashMap<String, db::FiltroValor>,
+    vista: &str,
+    limit: usize,
+    config: &Config,
+    status_col: Option<&str>,
+    modo: Option<&db::ModoOptimizacion>,
+) -> Result<db::DashboardData, String> {
+    db::dashboard(
+        conn, filtros, vista, None, 1, limit, status_col, modo,
+        Some(&config.pending_pattern), Some(&config.signed_pattern)
+    ).map_err(|e| e.to_string())
+}
+
+pub fn exportar_excel(
+    conn: &Connection,
+    filtros: &HashMap<String, db::FiltroValor>,
+    output_path: &Path,
+    vista: &str,
+    config: &Config,
+) -> Result<String, String> {
+    let data = fetch_dashboard_data(conn, filtros, vista, db::constants::TABLE_LIMIT, config, None, None)?;
+
+    if let Some(parent) = output_path.parent() {
+        ensure_dir(parent)?;
+    }
+
+    let mut workbook = rust_xlsxwriter::Workbook::new();
+    let sheet = workbook
+        .add_worksheet()
+        .set_name("Reporte")
+        .map_err(|e| e.to_string())?;
+
+    // Headers
+    for (i, col_name) in data.columnas_tabla.iter().enumerate() {
+        sheet
+            .write_string(0, i as u16, col_name)
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Data rows
+    for (row_idx, row) in data.tabla.iter().enumerate() {
+        for (col_idx, col_name) in data.columnas_tabla.iter().enumerate() {
+            let val = row
+                .get(col_name)
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .unwrap_or_default();
+            sheet
+                .write_string((row_idx + 1) as u32, col_idx as u16, &val)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+
+    // Auto-width
+    for (i, col_name) in data.columnas_tabla.iter().enumerate() {
+        let max_len = col_name.len().max(10).min(50) as f64;
+        sheet.set_column_width(i as u16, max_len + 2.0)
+            .map_err(|e| e.to_string())?;
+    }
+
+    workbook
+        .save(output_path)
+        .map_err(|e| format!("Error guardando Excel: {}", e))?;
+
+    Ok(output_path.to_string_lossy().to_string())
+}
+
+pub fn exportar_pdf_with_screenshot(
+    conn: &Connection,
+    filtros: &HashMap<String, db::FiltroValor>,
+    output_path: &Path,
+    vista: &str,
+    config: &Config,
+    png_bytes: &[u8],
+) -> Result<String, String> {
+    use printpdf::{BuiltinFont, Image, ImageTransform, Mm, PdfDocument};
+
+    let data = fetch_dashboard_data(conn, filtros, vista, db::constants::PDF_ROW_LIMIT, config, None, None)?;
+
+    if let Some(parent) = output_path.parent() {
+        ensure_dir(parent)?;
+    }
+
+    let (doc, page1, layer1) = PdfDocument::new(
+        &config.pdf.title,
+        Mm(config.pdf.page_w_mm),
+        Mm(config.pdf.page_h_mm),
+        "Layer 1",
+    );
+
+    let font = doc
+        .add_builtin_font(BuiltinFont::Helvetica)
+        .map_err(|e| format!("Error con fuente: {}", e))?;
+    let font_bold = doc
+        .add_builtin_font(BuiltinFont::HelveticaBold)
+        .map_err(|e| format!("Error con fuente: {}", e))?;
+
+    let layer = doc.get_page(page1).get_layer(layer1);
+
+    layer.use_text(&config.pdf.title, 14.0, Mm(10.0), Mm(195.0), &font_bold);
+    layer.use_text(
+        &format!("Registros: {} | Pendientes: {} | Firmados: {}",
+                 data.total_general, data.total_pendientes, data.total_firmados),
+        10.0, Mm(10.0), Mm(188.0), &font,
+    );
+
+    let stats = format!(
+        "Total: {} | Pendientes: {} | Firmados: {} | Universo: {}",
+        data.total_general, data.total_pendientes, data.total_firmados, data.total_matching
+    );
+    layer.use_text(&stats, 8.0, Mm(10.0), Mm(4.0), &font);
+
+    // Embed screenshot image after all text (consumes layer)
+    let dynamic_img = ::image::load_from_memory(png_bytes)
+        .map_err(|e| format!("Error cargando imagen: {}", e))?;
+    let print_img = Image::from_dynamic_image(&dynamic_img);
+    let dpi = 300.0;
+    let natural_w_pt = dynamic_img.width() as f32 * 72.0 / dpi;
+    let natural_h_pt = dynamic_img.height() as f32 * 72.0 / dpi;
+    let target_w_pt = Mm(config.pdf.image_w_mm).into_pt().0;
+    let target_h_pt = Mm(config.pdf.image_h_mm).into_pt().0;
+    let scale = (target_w_pt / natural_w_pt).min(target_h_pt / natural_h_pt);
+    print_img.add_to_layer(layer, ImageTransform {
+        translate_x: Some(Mm(10.0)),
+        translate_y: Some(Mm(10.0)),
+        scale_x: Some(scale),
+        scale_y: Some(scale),
+        dpi: Some(dpi),
+        ..Default::default()
+    });
+
+    let file = File::create(output_path)
+        .map_err(|e| format!("Error creando PDF: {}", e))?;
+    let mut buf_writer = BufWriter::new(file);
+    doc.save(&mut buf_writer)
+        .map_err(|e| format!("Error guardando PDF: {}", e))?;
+
+    Ok(output_path.to_string_lossy().to_string())
+}
+
+pub fn exportar_pptx_with_screenshot(
+    output_path: &Path,
+    png_bytes: &[u8],
+    config: &Config,
+) -> Result<String, String> {
+    use pptx::opc::PackURI;
+    use pptx::presentation::Presentation;
+    use pptx::shapes::ShapeTree;
+    use pptx::units::Emu;
+    use pptx::Image;
+
+    if let Some(parent) = output_path.parent() {
+        ensure_dir(parent)?;
+    }
+
+    let mut pres = Presentation::new().map_err(|e| format!("Error creando PPTX: {}", e))?;
+    let layouts = pres.slide_layouts().map_err(|e| format!("Error obteniendo layouts: {}", e))?;
+    let slide_ref = pres.add_slide(&layouts[0]).map_err(|e| format!("Error agregando slide: {}", e))?;
+
+    let img = Image::from_bytes(png_bytes.to_vec(), "image/png");
+    let img_partname_str = pres.add_image(&img).map_err(|e| format!("Error agregando imagen: {}", e))?;
+    let img_partname = PackURI::new(&img_partname_str).map_err(|e| format!("Error URI imagen: {}", e))?;
+
+    let slide_part = pres.package_mut().part_mut(&slide_ref.partname)
+        .ok_or_else(|| "Error accediendo al slide".to_string())?;
+    let relative_ref = img_partname.relative_ref(slide_part.partname.base_uri());
+    let r_id = slide_part.rels.add_relationship(
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image",
+        relative_ref, false,
+    );
+
+    let new_xml = ShapeTree::add_picture(
+        &slide_part.blob, &r_id,
+        Emu(0), Emu(0),
+        Emu(config.pptx.image_w_emu), Emu(config.pptx.image_h_emu),
+    ).map_err(|e| format!("Error agregando imagen al slide: {}", e))?;
+    slide_part.blob = new_xml;
+
+    pres.save(output_path).map_err(|e| format!("Error guardando PPTX: {}", e))?;
+
+    Ok(output_path.to_string_lossy().to_string())
+}
+=== src/main.rs ===
+mod app;
+mod config;
+mod db;
+mod export;
+mod redactor;
+mod ui;
+
+fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: eframe::egui::ViewportBuilder::default().with_inner_size([1400.0, 900.0]),
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Reporte de Contrataciones",
+        options,
+        Box::new(|_cc| Ok(Box::new(app::App::new()))),
+    )
+}
+=== src/redactor.rs ===
+use crate::db::{DashboardData, SchemaMetadata};
+use crate::db::utils::display_name;
+
+pub struct Redactor {
+    pub template: String,
+    pub output: String,
+}
+
+impl Redactor {
+    pub fn new() -> Self {
+        Redactor {
+            template: String::new(),
+            output: String::new(),
+        }
+    }
+
+    pub fn redactar(&mut self, data: &DashboardData, meta: &SchemaMetadata) {
+        if self.template.trim().is_empty() {
+            self.output = "Escribe una plantilla primero.".to_string();
+            return;
+        }
+
+        let mut result = self.template.clone();
+
+        result = result.replace("#total", &data.total_general.to_string());
+        result = result.replace("#pendientes", &data.total_pendientes.to_string());
+        result = result.replace("#firmados", &data.total_firmados.to_string());
+
+        let display_cols: Vec<(String, String)> = meta
+            .columnas
+            .iter()
+            .map(|c| (c.nombre.clone(), display_name(&c.nombre)))
+            .collect();
+
+        for (col_name, display_name) in &display_cols {
+            let placeholder = format!("#{}", display_name);
+            let alt_placeholder = format!("#{}", col_name);
+
+            let ph = if result.contains(&placeholder) {
+                placeholder
+            } else if result.contains(&alt_placeholder) {
+                alt_placeholder
+            } else {
+                continue;
+            };
+
+            let values: Vec<String> = data
+                .tabla
+                .iter()
+                .map(|row| {
+                    row.get(col_name)
+                        .and_then(|v| v.as_str().map(|s| s.to_string()))
+                        .unwrap_or_default()
+                })
+                .collect();
+
+            let replacement = if values.is_empty() {
+                if data.total_general == 0 {
+                    "(sin registros)".to_string()
+                } else {
+                    format!("({} valores)", values.len())
+                }
+            } else if values.len() == 1 {
+                values[0].clone()
+            } else {
+                let mut lines: Vec<String> = values.iter().map(|v| format!("  - {}", v)).collect();
+                lines.insert(0, format!("({} registros):", values.len()));
+                lines.join("\n")
+            };
+
+            result = result.replace(&ph, &replacement);
+        }
+
+        self.output = result;
+    }
+}
+=== src/db/analysis.rs ===
+use rusqlite::Connection;
+use rusqlite::Result as SqlResult;
+use rusqlite::types::ToSql;
+
+use super::types::{ColumnaInfo, ColumnaRaw, FkInfo, DependenciaInfo};
+use super::constants;
+use super::constants::AnalyseConfig;
+use super::schema::obtener_pk_con_fallback;
+use super::utils::{clean_identifier, safe_ident, strip_fk_prefix};
+use std::collections::HashMap;
+
+fn query_distinct_values(
+    conn: &Connection,
+    col_expr: &str,
+    from_expr: &str,
+    where_clause: Option<&str>,
+    limit: u64,
+) -> SqlResult<Vec<serde_json::Value>> {
+    let where_sql = where_clause
+        .map(|w| format!(" WHERE {}", w))
+        .unwrap_or_default();
+    let sql = format!(
+        "SELECT DISTINCT {} FROM {} {} ORDER BY 1 LIMIT {}",
+        col_expr, from_expr, where_sql, limit
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let values = stmt
+        .query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .map(|v| serde_json::json!(v))
+        .collect();
+    Ok(values)
+}
+
+fn build_columna_info(
+    nombre: String, tipo: &str,
+    valores: Option<Vec<serde_json::Value>>,
+    total_distintos: Option<u64>,
+    min: Option<f64>, max: Option<f64>,
+    fecha_min: Option<String>, fecha_max: Option<String>,
+    col_original: Option<String>,
+    tabla_catalogo: Option<String>,
+    col_nombre_catalogo: Option<String>,
+) -> ColumnaInfo {
+    ColumnaInfo {
+        nombre, tipo: tipo.to_string(), valores, total_distintos,
+        min, max, fecha_min, fecha_max,
+        col_original, tabla_catalogo, col_nombre_catalogo,
+    }
+}
+
+fn query_min_max<T: rusqlite::types::FromSql>(
+    conn: &Connection,
+    tabla: &str,
+    col: &str,
+) -> SqlResult<(Option<T>, Option<T>)> {
+    let st = safe_ident(tabla);
+    let sc = safe_ident(col);
+    conn.query_row(
+        &format!("SELECT MIN({sc}), MAX({sc}) FROM {st}"),
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+}
+
+pub fn analizar_columna(
+    conn: &Connection,
+    tabla: &str,
+    col: &ColumnaRaw,
+    fk_pairs: &[(String, FkInfo)],
+    ac: &AnalyseConfig,
+) -> SqlResult<Option<ColumnaInfo>> {
+    let st = safe_ident(tabla);
+
+    // Detect FK columns → show catalog display names
+    let fk_match = fk_pairs.iter().find(|(k, _)| *k == format!("{}.{}", tabla, col.name));
+    if let Some((_, fk_info)) = fk_match {
+        if let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla, ac)? {
+            let tc = safe_ident(&fk_info.tabla);
+            let cn = safe_ident(&col_nombre);
+            let valores = query_distinct_values(
+                conn, &cn, &tc,
+                Some(&format!("{} IS NOT NULL", cn)),
+                constants::MAX_CATEGORICAL_VALUES * 2,
+            )?;
+            let total_dist = valores.len() as u64;
+            let nombre_display = strip_fk_prefix(&col.name, &ac.fk_id_prefix);
+            return Ok(Some(build_columna_info(
+                nombre_display, "categorical_fk",
+                Some(valores), Some(total_dist),
+                None, None, None, None,
+                Some(col.name.clone()),
+                Some(fk_info.tabla.clone()), Some(col_nombre),
+            )));
+        }
+    }
+
+    let sc = safe_ident(&col.name);
+
+    match col.col_type.as_str() {
+        "DATE" | "DATETIME" | "TIMESTAMP" => {
+            let (min_v, max_v) = query_min_max::<String>(conn, tabla, &col.name)?;
+            Ok(Some(build_columna_info(
+                col.name.clone(), "date",
+                None, None, None, None, min_v, max_v,
+                None, None, None,
+            )))
+        }
+
+        "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" | "DECIMAL" => {
+            let (min_v, max_v) = query_min_max::<f64>(conn, tabla, &col.name)?;
+            let distinct: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(DISTINCT {sc}) FROM {st}"),
+                    [],
+                    |row| row.get(0),
+                )?;
+
+            if distinct as u64 <= constants::MAX_CATEGORICAL_VALUES && min_v.is_some() {
+                let values = query_distinct_values(
+                    conn, &sc.to_string(), &st.to_string(),
+                    None,
+                    constants::MAX_CATEGORICAL_VALUES * 2,
+                )?;
+                return Ok(Some(build_columna_info(
+                    col.name.clone(), "categorical",
+                    Some(values), Some(distinct as u64),
+                    None, None, None, None,
+                    None, None, None,
+                )));
+            }
+
+            Ok(Some(build_columna_info(
+                col.name.clone(), "numeric",
+                None, None, min_v, max_v, None, None,
+                None, None, None,
+            )))
+        }
+
+        "INTEGER" | "BIGINT" | "SMALLINT" | "TINYINT" => {
+            let (distinct, total): (i64, i64) = conn
+                .query_row(
+                    &format!("SELECT COUNT(DISTINCT {sc}), COUNT(*) FROM {st}"),
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+
+            if total > 0 && (distinct as f64 / total as f64) > constants::PK_RATIO_THRESHOLD {
+                return Ok(None);
+            }
+
+            if distinct as u64 <= constants::MAX_CATEGORICAL_VALUES {
+                let values = query_distinct_values(
+                    conn, &sc.to_string(), &st.to_string(),
+                    None,
+                    constants::MAX_CATEGORICAL_VALUES * 2,
+                )?;
+                return Ok(Some(build_columna_info(
+                    col.name.clone(), "categorical",
+                    Some(values), Some(distinct as u64),
+                    None, None, None, None,
+                    None, None, None,
+                )));
+            }
+
+            let (min_v, max_v) = query_min_max::<i64>(conn, tabla, &col.name)?;
+            return Ok(Some(build_columna_info(
+                col.name.clone(), "numeric",
+                None, None, min_v.map(|v| v as f64), max_v.map(|v| v as f64), None, None,
+                None, None, None,
+            )));
+        }
+
+        _ => {
+            let row: std::result::Result<(i64, f64), _> = conn.query_row(
+                &format!(
+                    "SELECT COUNT(DISTINCT {sc}), AVG(LENGTH({sc})) \
+                     FROM (SELECT {sc} FROM {st} LIMIT {})",
+                    constants::SAMPLE_SIZE
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            );
+            let (distinct, avg_len) = match row {
+                Ok(r) => r,
+                Err(_) => return Ok(None),
+            };
+
+            if avg_len > constants::MAX_TEXT_LENGTH_THRESHOLD {
+                return Ok(None);
+            }
+
+            if distinct as u64 <= constants::MAX_CATEGORICAL_VALUES {
+                let values = query_distinct_values(
+                    conn, &sc.to_string(), &st.to_string(),
+                    Some(&format!("{} IS NOT NULL AND {} != ''", sc, sc)),
+                    constants::MAX_CATEGORICAL_VALUES * 2,
+                )?;
+                Ok(Some(build_columna_info(
+                    col.name.clone(), "categorical",
+                    Some(values), Some(distinct as u64),
+                    None, None, None, None,
+                    None, None, None,
+                )))
+            } else {
+                Ok(Some(build_columna_info(
+                    col.name.clone(), "text_search",
+                    None, None, None, None, None, None,
+                    None, None, None,
+                )))
+            }
+        }
+    }
+}
+
+pub fn detectar_columna_estado(
+    conn: &Connection,
+    tabla: &str,
+    col_names: &[String],
+    pending_pattern: &str,
+    signed_pattern: &str,
+) -> SqlResult<Option<String>> {
+    let st = safe_ident(tabla);
+    let mut best_col: Option<String> = None;
+    let mut best_score = 0.0;
+
+    let pend_like = format!("%{}%", pending_pattern.to_uppercase());
+    let firm_like = format!("%{}%", signed_pattern.to_uppercase());
+
+    for col in col_names {
+        if !clean_identifier(col) {
+            continue;
+        }
+        let sc = safe_ident(col);
+
+        let (distinct_count, total_count): (i64, i64) = match conn.query_row(
+            &format!(
+                "SELECT COUNT(DISTINCT v), COUNT(*) FROM (SELECT CAST({sc} AS TEXT) AS v FROM {st}) \
+                 WHERE v IS NOT NULL AND v != ''"
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        if total_count == 0 {
+            continue;
+        }
+
+        let distinct_ratio = distinct_count as f64 / total_count as f64;
+
+        let mut short_values = 0i64;
+        if let Ok(mut stmt) = conn.prepare(&format!(
+            "SELECT COUNT(*) FROM (SELECT CAST({sc} AS TEXT) as v FROM {st} \
+             WHERE v IS NOT NULL AND v != '' GROUP BY v) \
+             WHERE LENGTH(v) <= {}",
+            constants::STATUS_SHORT_LENGTH_THRESHOLD
+        )) {
+            short_values = stmt.query_row([], |row| row.get(0))
+                .unwrap_or_else(|e| { eprintln!("[db/analysis] short_values query failed for col '{}': {}", col, e); 0 });
+        }
+
+
+        let short_ratio = if distinct_count > 0 {
+            short_values as f64 / distinct_count as f64
+        } else {
+            0.0
+        };
+
+        let mut pend_ratio = 0.0;
+        let mut firm_ratio = 0.0;
+        if distinct_count <= constants::MAX_CATEGORICAL_VALUES as i64 {
+            let sql = format!(
+                "SELECT \
+                 CAST(SUM(CASE WHEN UPPER({sc}) LIKE ? THEN 1 ELSE 0 END) AS REAL) / MAX(1.0 * COUNT(*), 1.0), \
+                 CAST(SUM(CASE WHEN UPPER({sc}) LIKE ? THEN 1 ELSE 0 END) AS REAL) / MAX(1.0 * COUNT(*), 1.0) \
+                 FROM {st}"
+            );
+            let (p, f): (f64, f64) = conn.query_row(
+                &sql,
+                &[&pend_like as &dyn ToSql, &firm_like as &dyn ToSql],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).unwrap_or_else(|e| { eprintln!("[db/analysis] status query failed for col '{}': {}", col, e); (0.0, 0.0) });
+            pend_ratio = p;
+            firm_ratio = f;
+        }
+
+        let status_combined = pend_ratio + firm_ratio;
+        let both_statuses = pend_ratio > constants::STATUS_THRESHOLD && firm_ratio > constants::STATUS_THRESHOLD;
+
+        let score = if distinct_ratio < constants::STATUS_DISTINCT_RATIO_THRESHOLD
+            && distinct_count >= constants::STATUS_MIN_DISTINCT && distinct_count <= constants::STATUS_MAX_DISTINCT
+            && short_ratio > constants::STATUS_SHORT_RATIO_THRESHOLD
+        {
+            if status_combined > constants::STATUS_COMBINED_THRESHOLD {
+                constants::STATUS_SCORE_BASE + status_combined * if both_statuses { constants::STATUS_BOTH_MULTIPLIER } else { 1.0 }
+            } else {
+                let coverage = (distinct_count as f64) / total_count.min(distinct_count * 100) as f64;
+                constants::STATUS_SCORE_BASE + coverage * constants::STATUS_COVERAGE_MULTIPLIER
+            }
+        } else if status_combined > constants::STATUS_COMBINED_THRESHOLD {
+            status_combined * if both_statuses { constants::STATUS_BOTH_MULTIPLIER } else { 1.0 }
+        } else {
+            continue;
+        };
+
+        if score > best_score {
+            best_score = score;
+            best_col = Some(col.clone());
+        }
+    }
+
+    Ok(best_col)
+}
+
+pub fn detectar_columna_nombre(
+    conn: &Connection,
+    tabla: &str,
+    ac: &AnalyseConfig,
+) -> SqlResult<Option<String>> {
+    let st = safe_ident(tabla);
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", st))?;
+    let col_names: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+    for preferred in &ac.preferred_name_cols {
+        if col_names.iter().any(|c| c.to_lowercase() == *preferred) {
+            return Ok(Some(preferred.clone()));
+        }
+    }
+    for c in &col_names {
+        let cl = c.to_lowercase();
+        if !cl.starts_with(&ac.exclude_id_prefix)
+            && !ac.exclude_name_cols.iter().any(|e| cl == *e)
+        {
+            return Ok(Some(c.clone()));
+        }
+    }
+    Ok(col_names.into_iter().next())
+}
+
+pub fn detectar_dependencias(
+    conn: &Connection,
+    columnas: &[ColumnaInfo],
+    fk_pairs: &[(String, FkInfo)],
+) -> SqlResult<Vec<DependenciaInfo>> {
+    let cat_cols: Vec<&ColumnaInfo> = columnas.iter().filter(|c| c.tipo == "categorical").collect();
+    let mut dependencias = Vec::new();
+
+    for hijo in &cat_cols {
+        for padre in &cat_cols {
+            if padre.nombre == hijo.nombre {
+                continue;
+            }
+            if let Some(mapeo) = construir_mapeo_dependencia(conn, &padre.nombre, &hijo.nombre, fk_pairs)? {
+                if !mapeo.is_empty() {
+                    dependencias.push(DependenciaInfo {
+                        columna_padre: padre.nombre.clone(),
+                        columna_dependiente: hijo.nombre.clone(),
+                        mapeo,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(dependencias)
+}
+
+fn construir_mapeo_dependencia(
+    conn: &Connection,
+    col_padre: &str,
+    col_hijo: &str,
+    fk_pairs: &[(String, FkInfo)],
+) -> SqlResult<Option<HashMap<String, Vec<String>>>> {
+    let padre_keys: Vec<&(String, FkInfo)> = fk_pairs.iter()
+        .filter(|(k, _)| k.to_lowercase().contains(&col_padre.to_lowercase()))
+        .collect();
+    let hijo_keys: Vec<&(String, FkInfo)> = fk_pairs.iter()
+        .filter(|(k, _)| k.to_lowercase().contains(&col_hijo.to_lowercase()))
+        .collect();
+
+    if padre_keys.is_empty() || hijo_keys.is_empty() {
+        return Ok(None);
+    }
+
+    for (pk_key, fk_info_pk) in &padre_keys {
+        // split() always returns at least one element, unwrap_or("") is safety net
+        let pt = pk_key.split(constants::FK_KEY_SEPARATOR).next().unwrap_or("");
+
+        for (fk_key, fk_info_fk) in &hijo_keys {
+            // split() always returns at least one element, unwrap_or("") is safety net
+            let ht = fk_key.split(constants::FK_KEY_SEPARATOR).next().unwrap_or("");
+
+            if fk_info_fk.tabla != fk_info_pk.tabla {
+                continue;
+            }
+            let tabla_rel = &fk_info_fk.tabla;
+            if [tabla_rel, pt, ht, col_padre, col_hijo].iter().any(|s| !clean_identifier(s)) {
+                continue;
+            }
+
+            let scp = safe_ident(col_padre);
+            let sch = safe_ident(col_hijo);
+            let str_ = safe_ident(tabla_rel);
+            let sa = safe_ident(&fk_info_pk.tabla);
+            let sb = safe_ident(&fk_info_fk.tabla);
+            let pk_col_name = if fk_info_pk.columna.is_empty() {
+                obtener_pk_con_fallback(conn, &fk_info_pk.tabla, crate::db::constants::DEFAULT_PK_FALLBACK)
+            } else {
+                fk_info_pk.columna.clone()
+            };
+            let fk_col_name = if fk_info_fk.columna.is_empty() {
+                obtener_pk_con_fallback(conn, &fk_info_fk.tabla, crate::db::constants::DEFAULT_PK_FALLBACK)
+            } else {
+                fk_info_fk.columna.clone()
+            };
+            let sapc = safe_ident(&pk_col_name);
+            let saoc = safe_ident(&fk_col_name);
+
+            let query = format!(
+                "SELECT DISTINCT a.{scp}, b.{sch} \
+                 FROM {str_} tr \
+                 JOIN {sa} a ON tr.{sapc} = a.{sapc} \
+                 JOIN {sb} b ON tr.{saoc} = b.{saoc} \
+                 WHERE a.{scp} IS NOT NULL AND b.{sch} IS NOT NULL \
+                 ORDER BY 1, 2"
+            );
+
+            if let Ok(mut stmt) = conn.prepare(&query) {
+                if let Ok(rows) = stmt.query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                }) {
+                    let mut mapeo: HashMap<String, Vec<String>> = HashMap::new();
+                    for row in rows.flatten() {
+                        mapeo.entry(row.0).or_default().push(row.1);
+                    }
+                    if !mapeo.is_empty() {
+                        return Ok(Some(mapeo));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+pub fn extraer_filtros_info(meta: &super::types::SchemaMetadata) -> Vec<super::types::FiltroInfo> {
+    let mut filtros: Vec<super::types::FiltroInfo> = meta.columnas.iter()
+        .map(|c| c.to_filtro_info())
+        .collect();
+    filtros.sort_by(|a, b| a.nombre.cmp(&b.nombre));
+    filtros
+}
+=== src/db/constants.rs ===
+pub const MAX_CATEGORICAL_VALUES: u64 = 50;
+pub const MAX_TEXT_LENGTH_THRESHOLD: f64 = 80.0;
+pub const SAMPLE_SIZE: usize = 1000;
+pub const TABLE_LIMIT: usize = 500;
+pub const PDF_ROW_LIMIT: usize = 200;
+pub const PK_RATIO_THRESHOLD: f64 = 0.8;
+pub const STATUS_THRESHOLD: f64 = 0.01;
+pub const STATUS_COMBINED_THRESHOLD: f64 = 0.5;
+pub const STATUS_SHORT_LENGTH_THRESHOLD: u64 = 25;
+pub const STATUS_SHORT_RATIO_THRESHOLD: f64 = 0.8;
+pub const GROUP_BY_LIMIT: u64 = 50;
+pub const MIN_FK_COUNT_FOR_OPTIMIZATION: usize = 3;
+pub const DEFAULT_PENDING_PATTERN: &str = "PEND";
+pub const DEFAULT_SIGNED_PATTERN: &str = "FIRM";
+pub const FILTRO_TODOS: &str = "__todos__";
+pub const DEFAULT_PAGE_SIZE: usize = 10;
+pub const DEFAULT_PK_FALLBACK: &str = "rowid";
+pub const DATE_FORMAT: &str = "%d/%m/%Y";
+pub const DATE_FORMAT_HINT: &str = "DD/MM/AAAA";
+pub const STATUS_DISTINCT_RATIO_THRESHOLD: f64 = 0.3;
+pub const STATUS_MIN_DISTINCT: i64 = 2;
+pub const STATUS_MAX_DISTINCT: i64 = 10;
+pub const STATUS_SCORE_BASE: f64 = 0.5;
+pub const STATUS_BOTH_MULTIPLIER: f64 = 2.0;
+pub const STATUS_COVERAGE_MULTIPLIER: f64 = 0.3;
+pub const FK_KEY_SEPARATOR: &str = ".";
+pub const FK_ALIAS_PREFIX: &str = "c_";
+pub const DEFAULT_EXCEL_NAME: &str = "reporte.xlsx";
+pub const DEFAULT_PDF_NAME: &str = "dashboard.pdf";
+pub const DEFAULT_PPTX_NAME: &str = "dashboard.pptx";
+
+#[derive(Debug, Clone)]
+pub struct AnalyseConfig {
+    pub catalog_prefix: String,
+    pub fk_id_prefix: String,
+    pub preferred_name_cols: Vec<String>,
+    pub exclude_id_prefix: String,
+    pub exclude_name_cols: Vec<String>,
+    pub view_keywords: Vec<String>,
+    pub fallback_pk_name: String,
+    pub redactor_placeholders: Vec<String>,
+}
+
+impl Default for AnalyseConfig {
+    fn default() -> Self {
+        Self {
+            catalog_prefix: "cat_".to_string(),
+            fk_id_prefix: "id_".to_string(),
+            preferred_name_cols: vec![
+                "nombre".into(),
+                "name".into(),
+                "descripcion".into(),
+                "desc".into(),
+            ],
+            exclude_id_prefix: "id".to_string(),
+            exclude_name_cols: vec![
+                "created_at".into(),
+                "updated_at".into(),
+            ],
+            view_keywords: vec![
+                "reporte".into(),
+                "excel".into(),
+                "vw_".into(),
+                "vista".into(),
+            ],
+            fallback_pk_name: DEFAULT_PK_FALLBACK.to_string(),
+            redactor_placeholders: vec![
+                "#total".into(),
+                "#pendientes".into(),
+                "#firmados".into(),
+            ],
+        }
+    }
+}
+=== src/db/dashboard.rs ===
+use rusqlite::Connection;
+use rusqlite::Result as SqlResult;
+use rusqlite::types::ToSql;
+
+use super::types::{DashboardData, FiltroValor, ModoOptimizacion};
+use super::constants;
+use super::utils::{clean_identifier, safe_ident};
+use super::schema::{obtener_columnas, obtener_pk_con_fallback};
+use std::collections::HashMap;
+
+fn col_prefix(modo: Option<&ModoOptimizacion>) -> &'static str {
+    if modo.map_or(false, |m| !m.es_universal()) { "tb." } else { "" }
+}
+
+fn add_categorical_filter(sc: &str, selected: &str, clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>) {
+    if !selected.is_empty() && selected != constants::FILTRO_TODOS {
+        clauses.push(format!("{} = ?", sc));
+        params.push(Box::new(selected.to_string()));
+    }
+}
+
+fn add_categorical_fk_filter(
+    p: &str, col_original: &str, tabla_catalogo: &str, col_nombre: &str,
+    selected: &str, conn: Option<&Connection>, pk_cache: &mut HashMap<String, String>,
+    clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>,
+    fk_joins: &mut Vec<String>,
+) {
+    if !selected.is_empty() && selected != constants::FILTRO_TODOS {
+        let tc = safe_ident(tabla_catalogo);
+        let cn = safe_ident(col_nombre);
+        let pk_col = pk_cache.entry(tabla_catalogo.to_string()).or_insert_with(|| {
+            conn.map(|c| obtener_pk_con_fallback(c, tabla_catalogo, constants::DEFAULT_PK_FALLBACK)).unwrap_or_else(|| constants::DEFAULT_PK_FALLBACK.to_string())
+        });
+        let fk_alias = format!("{}fltr_{}", constants::FK_ALIAS_PREFIX, safe_ident(col_original));
+        fk_joins.push(format!(
+            "LEFT JOIN {} AS {} ON {}{} = {}.{}",
+            tc, fk_alias, p, safe_ident(col_original), fk_alias, safe_ident(pk_col),
+        ));
+        clauses.push(format!("{}.{} = ?", fk_alias, cn));
+        params.push(Box::new(selected.to_string()));
+    }
+}
+
+fn add_date_filter(sc: &str, desde: &str, hasta: &str, clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>) {
+    if !desde.is_empty() {
+        clauses.push(format!("{} >= ?", sc));
+        params.push(Box::new(desde.to_string()));
+    }
+    if !hasta.is_empty() {
+        clauses.push(format!("{} <= ?", sc));
+        params.push(Box::new(hasta.to_string()));
+    }
+}
+
+fn add_numeric_filter(sc: &str, min: f64, max: f64, clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>) {
+    clauses.push(format!("{} >= ?", sc));
+    params.push(Box::new(min));
+    clauses.push(format!("{} <= ?", sc));
+    params.push(Box::new(max));
+}
+
+fn add_text_search_filter(sc: &str, query: &str, clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>) {
+    if !query.is_empty() {
+        clauses.push(format!("{} LIKE ?", sc));
+        params.push(Box::new(format!("%{}%", query)));
+    }
+}
+
+fn construir_where(
+    filtros: &HashMap<String, FiltroValor>,
+    modo: Option<&ModoOptimizacion>,
+    conn: Option<&Connection>,
+) -> (String, Vec<Box<dyn ToSql>>, Vec<String>) {
+    let p = col_prefix(modo);
+    let mut pk_cache: HashMap<String, String> = HashMap::new();
+    let mut where_clauses: Vec<String> = Vec::new();
+    let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+    let mut fk_joins: Vec<String> = Vec::new();
+
+    for (col_name, filtro) in filtros {
+        let sc = format!("{}{}", p, safe_ident(col_name));
+        match filtro {
+            FiltroValor::Categorical { selected } =>
+                add_categorical_filter(&sc, selected, &mut where_clauses, &mut params),
+            FiltroValor::CategoricalFK { selected, col_original, tabla_catalogo, col_nombre } =>
+                add_categorical_fk_filter(&p, col_original, tabla_catalogo, col_nombre, selected, conn, &mut pk_cache, &mut where_clauses, &mut params, &mut fk_joins),
+            FiltroValor::Date { desde, hasta } =>
+                add_date_filter(&sc, desde, hasta, &mut where_clauses, &mut params),
+            FiltroValor::Numeric { min, max, .. } =>
+                add_numeric_filter(&sc, *min, *max, &mut where_clauses, &mut params),
+            FiltroValor::TextSearch { query } =>
+                add_text_search_filter(&sc, query, &mut where_clauses, &mut params),
+        }
+    }
+
+    if where_clauses.is_empty() {
+        (String::new(), params, fk_joins)
+    } else {
+        (format!("WHERE {}", where_clauses.join(" AND ")), params, fk_joins)
+    }
+}
+
+pub fn dashboard(
+    conn: &Connection,
+    filtros: &HashMap<String, FiltroValor>,
+    vista: &str,
+    group_by: Option<&str>,
+    page: usize,
+    page_size: usize,
+    status_col: Option<&str>,
+    modo: Option<&ModoOptimizacion>,
+    pending_pattern: Option<&str>,
+    signed_pattern: Option<&str>,
+) -> SqlResult<DashboardData> {
+    if vista.is_empty() || !clean_identifier(vista) {
+        return Ok(DashboardData::default());
+    }
+
+    let st = safe_ident(vista);
+    let cols = obtener_columnas(conn, vista)?;
+    let col_names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
+    let (where_sql, params, fk_joins) = construir_where(filtros, modo, Some(conn));
+    let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+    let from_clause = match modo {
+        Some(m) if !m.es_universal() => {
+            let Some(base) = m.tabla_base() else { return Ok(DashboardData::default()); };
+            let tb = safe_ident(base);
+            let mut joins = Vec::new();
+            for fk in m.fks() {
+                let alias = format!("{}{}", constants::FK_ALIAS_PREFIX, fk.col_id);
+                joins.push(format!(
+                    "LEFT JOIN {} AS {} ON {}.{} = {}.{}",
+                    safe_ident(&fk.tabla_catalogo),
+                    safe_ident(&alias),
+                    "tb", safe_ident(&fk.col_id),
+                    safe_ident(&alias), safe_ident(&fk.pk_col),
+                ));
+            }
+            joins.extend(fk_joins);
+            if joins.is_empty() {
+                format!("FROM {tb} AS tb")
+            } else {
+                format!("FROM {tb} AS tb {}", joins.join(" "))
+            }
+        }
+        _ => {
+            if fk_joins.is_empty() {
+                format!("FROM {st}")
+            } else {
+                format!("FROM {} AS tb {}", st, fk_joins.join(" "))
+            }
+        }
+    };
+
+    let count_sql = format!("SELECT COUNT(*) {from_clause} {where_sql}");
+    let total_general: i64 = conn.query_row(&count_sql, params_refs.as_slice(), |row| row.get(0))?;
+    let total_all_sql = format!("SELECT COUNT(*) {from_clause}");
+    let total_matching: i64 = conn.query_row(&total_all_sql, [], |row| row.get(0))?;
+
+    let pending_pat = pending_pattern.unwrap_or(constants::DEFAULT_PENDING_PATTERN);
+    let signed_pat = signed_pattern.unwrap_or(constants::DEFAULT_SIGNED_PATTERN);
+    let pendientes = contar_por_estado(conn, &format!("{from_clause}"), &where_sql, params_refs.as_slice(), status_col, pending_pat, modo)?;
+    let firmados = contar_por_estado(conn, &format!("{from_clause}"), &where_sql, params_refs.as_slice(), status_col, signed_pat, modo)?;
+
+    let grupo_actual = group_by.unwrap_or("").to_string();
+    let por_grupo = if !grupo_actual.is_empty() && clean_identifier(&grupo_actual) {
+        let p = col_prefix(modo);
+        let sc = format!("{}{}", p, safe_ident(&grupo_actual));
+        let group_sql = format!(
+            "SELECT group_key, COUNT(*) FROM (SELECT CAST({sc} AS TEXT) AS group_key {from_clause} {where_sql}) sub \
+             WHERE group_key IS NOT NULL AND group_key != '' \
+             GROUP BY group_key ORDER BY COUNT(*) DESC LIMIT {}",
+            constants::GROUP_BY_LIMIT
+        );
+        let mut stmt = conn.prepare(&group_sql)?;
+        let mut map = HashMap::new();
+        if let Ok(rows) = stmt.query_map(params_refs.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        }) {
+            for row in rows.flatten() {
+                map.insert(row.0, row.1 as u64);
+            }
+        }
+        map
+    } else {
+        HashMap::new()
+    };
+
+    let select_cols: Vec<String> = match modo {
+        Some(m) if !m.es_universal() => {
+            col_names.iter().map(|c| {
+                if let Some(fk) = m.fks().iter().find(|fk| &fk.nombre_display == c) {
+                let alias = format!("{}{}", constants::FK_ALIAS_PREFIX, fk.col_id);
+                    format!("{}.{} AS \"{}\"", safe_ident(&alias), safe_ident(&fk.col_nombre), c)
+                } else {
+                    format!("tb.{}", safe_ident(c))
+                }
+            }).collect()
+        }
+        _ => {
+            let p = col_prefix(modo);
+            col_names.iter().map(|c| format!("{}{}", p, safe_ident(c))).collect()
+        }
+    };
+
+    let offset = page.saturating_sub(1) * page_size;
+    let limit = page_size.min(constants::TABLE_LIMIT);
+    let p_order = col_prefix(modo);
+    let order_col = col_names.first()
+        .map(|c| format!("{}{}", p_order, safe_ident(c)))
+        .unwrap_or_else(|| constants::DEFAULT_PK_FALLBACK.to_string());
+    let table_sql = format!(
+        "SELECT {} {from_clause} {where_sql} ORDER BY {} LIMIT {} OFFSET {}",
+        select_cols.join(", "),
+        order_col,
+        limit,
+        offset,
+    );
+    let mut stmt = conn.prepare(&table_sql)?;
+    let mut tabla = Vec::new();
+    if let Ok(rows) = stmt.query_map(params_refs.as_slice(), |row| {
+        let mut map = HashMap::new();
+        for (i, name) in col_names.iter().enumerate() {
+            let val: String = row.get::<_, Option<String>>(i).ok().flatten().unwrap_or_default();
+            map.insert(name.clone(), serde_json::Value::String(val));
+        }
+        Ok(map)
+    }) {
+        for row in rows.flatten() {
+            tabla.push(row);
+        }
+    }
+
+    Ok(DashboardData {
+        total_pendientes: pendientes as u64,
+        total_firmados: firmados as u64,
+        total_general: total_general as u64,
+        total_matching: total_matching as u64,
+        current_page: page,
+        page_size,
+        por_grupo,
+        grupo_actual,
+        tabla,
+        columnas_tabla: col_names,
+    })
+}
+
+fn contar_por_estado(
+    conn: &Connection, from_clause: &str, where_sql: &str,
+    params: &[&dyn ToSql],
+    status_col: Option<&str>, pattern: &str,
+    modo: Option<&ModoOptimizacion>,
+) -> SqlResult<i64> {
+    let col = match status_col {
+        Some(c) => c,
+        None => return Ok(0),
+    };
+    if !clean_identifier(col) {
+        return Ok(0);
+    }
+    let p = col_prefix(modo);
+    let sc = format!("{}{}", p, safe_ident(col));
+    let escaped_pattern = format!("%{}%", pattern.to_uppercase());
+    let cond = if where_sql.is_empty() { "WHERE".to_string() } else { format!("{} AND", where_sql) };
+    let sql = format!(
+        "SELECT COUNT(*) {from_clause} {cond} UPPER(CAST({sc} AS TEXT)) LIKE ?"
+    );
+
+    let mut local_params: Vec<&dyn ToSql> = params.to_vec();
+    local_params.push(&escaped_pattern);
+    conn.query_row(&sql, local_params.as_slice(), |row| row.get::<_, i64>(0))
+}
+=== src/db/explorer.rs ===
+use rusqlite::Connection;
+use rusqlite::Result as SqlResult;
+
+use super::types::{SchemaMetadata, FKOptimizada, ModoOptimizacion, FkInfo};
+use super::constants::{self, AnalyseConfig};
+use super::schema::{listar_tablas, encontrar_vista_principal, encontrar_tabla_principal, obtener_columnas, analizar_foreign_keys};
+use super::analysis::{analizar_columna, detectar_dependencias, detectar_columna_nombre};
+use super::utils::strip_fk_prefix;
+
+pub fn explorar(conn: &Connection, ac: &AnalyseConfig) -> SqlResult<SchemaMetadata> {
+    let tablas = listar_tablas(conn)?;
+    let vista = encontrar_vista_principal(conn, &ac.view_keywords)?
+        .or_else(|| encontrar_tabla_principal(conn, &tablas))
+        .unwrap_or_default();
+
+    if vista.is_empty() {
+        return Ok(SchemaMetadata {
+            vista_principal: String::new(),
+            tablas,
+            columnas: vec![],
+            dependencias: vec![],
+        });
+    }
+
+    let columnas_raw = obtener_columnas(conn, &vista)?;
+    let fk_pairs = analizar_foreign_keys(conn, &tablas)?;
+
+    let mut columnas = Vec::new();
+    for col in &columnas_raw {
+        if col.pk {
+            continue;
+        }
+        if let Some(info) = analizar_columna(conn, &vista, col, &fk_pairs, ac)? {
+            columnas.push(info);
+        }
+    }
+
+    let cat_count = columnas.iter().filter(|c| c.tipo == "categorical" || c.tipo == "categorical_fk").count();
+    let dependencias = if cat_count >= 2 {
+        detectar_dependencias(conn, &columnas, &fk_pairs)?
+    } else {
+        Vec::new()
+    };
+
+    Ok(SchemaMetadata {
+        vista_principal: vista,
+        tablas,
+        columnas,
+        dependencias,
+    })
+}
+
+pub fn detectar_patron_optimizable(
+    conn: &Connection,
+    vista: &str,
+    ac: &AnalyseConfig,
+) -> SqlResult<ModoOptimizacion> {
+    let vl = vista.to_lowercase();
+
+    // CRITERIO 1: Vistas con keywords conocidos → Universal
+    if vista.is_empty() || ac.view_keywords.iter().any(|kw| vl.contains(kw.as_str())) {
+        return Ok(ModoOptimizacion::Universal);
+    }
+
+    // CRITERIO 1b: Tablas catálogo → Universal (no tienen FKs de negocio, se consultan directas)
+    if vl.starts_with(&ac.catalog_prefix) {
+        return Ok(ModoOptimizacion::Universal);
+    }
+
+    // CRITERIO 2: Para tablas base, verificar si tienen suficientes FKs a catálogos
+    let tablas = listar_tablas(conn)?;
+    let tabla_base = encontrar_tabla_principal(conn, &tablas)
+        .unwrap_or_else(|| vista.to_string());
+    let fk_pairs = analizar_foreign_keys(conn, &tablas)?;
+
+    let prefix = format!("{}.", tabla_base);
+    let cat_fks: Vec<&(String, FkInfo)> = fk_pairs.iter()
+        .filter(|(key, fk)| key.starts_with(&prefix) && fk.tabla.to_lowercase().starts_with(&ac.catalog_prefix))
+        .collect();
+
+    if cat_fks.len() < constants::MIN_FK_COUNT_FOR_OPTIMIZATION {
+        return Ok(ModoOptimizacion::Universal);
+    }
+
+    let mut fks_optimizadas = Vec::new();
+    for (key, fk_info) in &cat_fks {
+        let Some(col_id) = key.split('.').last().map(|s| s.to_string()) else { continue };
+        let Some(col_nombre) = detectar_columna_nombre(conn, &fk_info.tabla, ac)? else { continue };
+        let nombre_display = strip_fk_prefix(&col_id, &ac.fk_id_prefix);
+        let pk_col = super::schema::detectar_pk_columna(conn, &fk_info.tabla)?;
+        fks_optimizadas.push(FKOptimizada {
+            col_id,
+            tabla_catalogo: fk_info.tabla.clone(),
+            col_nombre,
+            nombre_display,
+            pk_col,
+        });
+    }
+
+    Ok(ModoOptimizacion::VistaConFKs {
+        tabla_base,
+        fks: fks_optimizadas,
+    })
+}
+=== src/db/mod.rs ===
+pub mod constants;
+pub mod types;
+pub mod utils;
+pub mod schema;
+pub mod analysis;
+pub mod dashboard;
+pub mod explorer;
+
+pub use types::*;
+pub use constants::AnalyseConfig;
+pub use explorer::explorar;
+pub use explorer::detectar_patron_optimizable;
+pub use dashboard::dashboard;
+pub use analysis::extraer_filtros_info;
+
+=== src/db/schema.rs ===
+use rusqlite::Connection;
+use rusqlite::Result as SqlResult;
+
+use super::types::{ColumnaRaw, FkInfo};
+use super::utils::{clean_identifier, safe_ident};
+
+fn listar_objetos_sqlite(conn: &Connection, tipo: &str) -> SqlResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        &format!("SELECT name FROM sqlite_master WHERE type='{}' ORDER BY name", tipo),
+    )?;
+    let items: Vec<String> = stmt.query_map([], |row| row.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(items)
+}
+
+pub fn listar_tablas(conn: &Connection) -> SqlResult<Vec<String>> {
+    listar_objetos_sqlite(conn, "table")
+}
+
+pub fn listar_vistas(conn: &Connection) -> SqlResult<Vec<String>> {
+    listar_objetos_sqlite(conn, "view")
+}
+
+pub fn encontrar_vista_principal(conn: &Connection, view_keywords: &[String]) -> SqlResult<Option<String>> {
+    let vistas = listar_vistas(conn)?;
+
+    for v in &vistas {
+        let vl = v.to_lowercase();
+        if view_keywords.iter().any(|kw| vl.contains(kw.as_str())) {
+            return Ok(Some(v.clone()));
+        }
+    }
+    Ok(vistas.into_iter().next())
+}
+
+pub fn encontrar_tabla_principal(conn: &Connection, tablas: &[String]) -> Option<String> {
+    let mut mejor: Option<(i64, String)> = None;
+    for t in tablas {
+        if !clean_identifier(t) {
+            continue;
+        }
+        let st = safe_ident(t);
+        let Ok(cols) = conn.prepare(&format!("PRAGMA table_info({})", st))
+            .and_then(|mut s| s.query_map([], |row| row.get::<_, String>(1)).map(|r| r.filter_map(|x| x.ok()).collect::<Vec<_>>()))
+        else { continue; };
+        if cols.len() < 3 {
+            continue;
+        }
+        let Ok(filas) = conn.query_row(&format!("SELECT COUNT(*) FROM {}", st), [], |r| r.get::<_, i64>(0)) else { continue; };
+        let puntaje = cols.len() as i64 + if filas > 10 { 1 } else { 0 };
+        if puntaje > mejor.as_ref().map(|m| m.0).unwrap_or(-1) {
+            mejor = Some((puntaje, t.clone()));
+        }
+    }
+    mejor.map(|m| m.1)
+}
+
+pub fn obtener_columnas(conn: &Connection, tabla: &str) -> SqlResult<Vec<ColumnaRaw>> {
+    let st = safe_ident(tabla);
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", st))?;
+    let cols = stmt
+        .query_map([], |row| {
+            Ok(ColumnaRaw {
+                _cid: row.get(0)?,
+                name: row.get(1)?,
+                col_type: row.get::<_, Option<String>>(2)?.unwrap_or_default().to_uppercase(),
+                _notnull: row.get::<_, bool>(3)?,
+                _dflt_value: row.get(4)?,
+                pk: row.get::<_, bool>(5)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(cols)
+}
+
+pub fn analizar_foreign_keys(
+    conn: &Connection,
+    tablas: &[String],
+) -> SqlResult<Vec<(String, FkInfo)>> {
+    let mut result = Vec::new();
+    for t in tablas {
+        if !clean_identifier(t) {
+            continue;
+        }
+        let st = safe_ident(t);
+        let mut stmt = conn.prepare(&format!("PRAGMA foreign_key_list({})", st))?;
+        let fks = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        for fk in fks.flatten() {
+            let key = format!("{}.{}", t, fk.1);
+            result.push((
+                key,
+                FkInfo {
+                    tabla: fk.0,
+                    columna: fk.2,
+                },
+            ));
+        }
+    }
+    Ok(result)
+}
+
+pub fn detectar_pk_columna(conn: &Connection, tabla: &str) -> SqlResult<String> {
+    let st = safe_ident(tabla);
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", st))?;
+    let cols: Vec<(String, bool)> = stmt
+        .query_map([], |row| Ok((row.get::<_, String>(1)?, row.get::<_, bool>(5)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(cols
+        .iter()
+        .find(|(_, is_pk)| *is_pk)
+        .map(|(name, _)| name.clone())
+        .unwrap_or_else(|| "rowid".to_string()))
+}
+
+/// Detecta la PK de una tabla via PRAGMA table_info.
+/// Si falla (error de BD o tabla sin PK), retorna `fallback` y loggea el error en stderr.
+pub fn obtener_pk_con_fallback(conn: &Connection, tabla: &str, fallback: &str) -> String {
+    detectar_pk_columna(conn, tabla).unwrap_or_else(|e| {
+        eprintln!("[schema] PK detection failed for {}: {}", tabla, e);
+        fallback.to_string()
+    })
+}
+=== src/db/types.rs ===
+use serde::Serialize;
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct SchemaMetadata {
+    pub vista_principal: String,
+    pub tablas: Vec<String>,
+    pub columnas: Vec<ColumnaInfo>,
+    #[serde(default)]
+    pub dependencias: Vec<DependenciaInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ColumnaInfo {
+    pub nombre: String,
+    pub tipo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valores: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_distintos: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fecha_min: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fecha_max: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col_original: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tabla_catalogo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col_nombre_catalogo: Option<String>,
+}
+
+impl ColumnaInfo {
+    pub fn to_filtro_info(&self) -> FiltroInfo {
+        let (tipo, valores) = match self.tipo.as_str() {
+            "categorical" => {
+                let vals = self.valores.as_ref().map(|v| {
+                    v.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()
+                });
+                ("categorical".to_string(), vals)
+            }
+            "categorical_fk" => {
+                let vals = self.valores.as_ref().map(|v| {
+                    v.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()
+                });
+                ("categorical_fk".to_string(), vals)
+            }
+            "date" => ("date".to_string(), None),
+            "numeric" => ("numeric".to_string(), None),
+            "text_search" => ("text_search".to_string(), None),
+            _ => return FiltroInfo {
+                nombre: self.nombre.clone(),
+                tipo: self.tipo.clone(),
+                valores: None, min: None, max: None,
+                fecha_min: None, fecha_max: None,
+                col_original: None, tabla_catalogo: None, col_nombre_catalogo: None,
+            },
+        };
+        FiltroInfo {
+            nombre: self.nombre.clone(),
+            tipo,
+            valores,
+            min: self.min,
+            max: self.max,
+            fecha_min: self.fecha_min.clone(),
+            fecha_max: self.fecha_max.clone(),
+            col_original: self.col_original.clone(),
+            tabla_catalogo: self.tabla_catalogo.clone(),
+            col_nombre_catalogo: self.col_nombre_catalogo.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DependenciaInfo {
+    pub columna_padre: String,
+    pub columna_dependiente: String,
+    pub mapeo: HashMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DashboardData {
+    pub total_pendientes: u64,
+    pub total_firmados: u64,
+    pub total_general: u64,
+    pub total_matching: u64,
+    pub current_page: usize,
+    pub page_size: usize,
+    #[serde(default)]
+    pub por_grupo: HashMap<String, u64>,
+    #[serde(default)]
+    pub grupo_actual: String,
+    pub tabla: Vec<HashMap<String, serde_json::Value>>,
+    pub columnas_tabla: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum FiltroValor {
+    Categorical { selected: String },
+    CategoricalFK { selected: String, col_original: String, tabla_catalogo: String, col_nombre: String },
+    Date { desde: String, hasta: String },
+    Numeric { min: f64, max: f64, orig_min: f64, orig_max: f64 },
+    TextSearch { query: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FiltroInfo {
+    pub nombre: String,
+    pub tipo: String,
+    pub valores: Option<Vec<String>>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub fecha_min: Option<String>,
+    pub fecha_max: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col_original: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tabla_catalogo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub col_nombre_catalogo: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FkInfo {
+    pub tabla: String,
+    pub columna: String,
+}
+
+#[derive(Debug)]
+pub struct ColumnaRaw {
+    pub _cid: i32,
+    pub name: String,
+    pub col_type: String,
+    pub _notnull: bool,
+    pub _dflt_value: Option<String>,
+    pub pk: bool,
+}
+
+impl Default for DashboardData {
+    fn default() -> Self {
+        DashboardData {
+            total_pendientes: 0,
+            total_firmados: 0,
+            total_general: 0,
+            total_matching: 0,
+            current_page: 1,
+            page_size: super::constants::DEFAULT_PAGE_SIZE,
+            por_grupo: HashMap::new(),
+            grupo_actual: String::new(),
+            tabla: vec![],
+            columnas_tabla: vec![],
+        }
+    }
+}
+
+impl ModoOptimizacion {
+    pub fn es_universal(&self) -> bool {
+        matches!(self, ModoOptimizacion::Universal)
+    }
+    pub fn fks(&self) -> &[FKOptimizada] {
+        match self {
+            ModoOptimizacion::Universal => &[],
+            ModoOptimizacion::VistaConFKs { fks, .. } => fks.as_slice(),
+        }
+    }
+    pub fn tabla_base(&self) -> Option<&str> {
+        match self {
+            ModoOptimizacion::Universal => None,
+            ModoOptimizacion::VistaConFKs { tabla_base, .. } => Some(tabla_base.as_str()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FKOptimizada {
+    pub col_id: String,
+    pub tabla_catalogo: String,
+    pub col_nombre: String,
+    pub nombre_display: String,
+    pub pk_col: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum ModoOptimizacion {
+    Universal,
+    VistaConFKs {
+        tabla_base: String,
+        fks: Vec<FKOptimizada>,
+    },
+}
+
+
+=== src/db/utils.rs ===
+use std::path::Path;
+use chrono::NaiveDate;
+use crate::db::constants::DATE_FORMAT;
+
+pub fn clean_identifier(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+}
+
+pub fn safe_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+pub fn strip_fk_prefix(name: &str, prefix: &str) -> String {
+    name.strip_prefix(prefix).unwrap_or(name).to_string()
+}
+
+pub fn safe_date_parse(date_str: &str, fallback: NaiveDate) -> NaiveDate {
+    match NaiveDate::parse_from_str(date_str, DATE_FORMAT) {
+        Ok(d) => d,
+        Err(_) => {
+            eprintln!("[utils] date parse failed for '{}', using fallback", date_str);
+            fallback
+        }
+    }
+}
+
+pub fn display_name(name: &str) -> String {
+    name.replace('_', " ")
+}
+
+pub fn db_paths_in(data_dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    if !data_dir.exists() {
+        return paths;
+    }
+    let Ok(entries) = std::fs::read_dir(data_dir) else { return paths; };
+    for entry in entries.flatten() {
+        let ext = entry.path().extension().map(|e| e.to_string_lossy().to_lowercase());
+        match ext.as_deref() {
+            Some("db") | Some("sqlite") | Some("sqlite3") => paths.push(entry.path()),
+            _ => {}
+        }
+    }
+    paths
+}
+=== src/ui/charts.rs ===
+use std::collections::HashMap;
+use eframe::egui::{self, Color32, Stroke, Shape};
+
+use crate::db::utils::display_name;
+use crate::ui::theme::{C_MUTED, C_TEXT, C_BG, C_GREY, nord_colors};
+
+
+fn prepare_chart_data(data: &HashMap<String, u64>) -> (Vec<(String, u64)>, Vec<Color32>) {
+    let mut sorted: Vec<(String, u64)> = data.iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    let colors = nord_colors();
+    (sorted, colors)
+}
+
+pub fn bar_chart_view(ui: &mut egui::Ui, data: &HashMap<String, u64>, _title: &str) {
+    use egui_plot::{Bar, BarChart, Plot};
+
+    if data.is_empty() {
+        ui.label("Sin datos para graficar");
+        return;
+    }
+
+    let (sorted, colors) = prepare_chart_data(data);
+
+    let bars: Vec<Bar> = sorted
+        .iter()
+        .enumerate()
+        .map(|(i, (label, count))| {
+            let display = display_name(label);
+            Bar::new(i as f64, *count as f64)
+                .name(format!("{}: {}", display, count))
+                .width(0.7)
+                .fill(colors[i % colors.len()])
+        })
+        .collect();
+
+    let chart = BarChart::new(bars).width(0.7);
+
+    Plot::new("bar_chart_grupos")
+        .height(200.0)
+        .show(ui, |plot_ui| {
+            plot_ui.bar_chart(chart);
+        });
+}
+
+pub fn pie_chart_view(ui: &mut egui::Ui, data: &HashMap<String, u64>, _title: &str) {
+    let total: u64 = data.values().sum();
+    if data.is_empty() || total == 0 {
+        ui.label("Sin datos para graficar");
+        return;
+    }
+
+    let (sorted, colors) = prepare_chart_data(data);
+
+    let size = egui::vec2(ui.available_width().min(300.0), 200.0);
+    let (rect, _response) = ui.allocate_exact_size(size, egui::Sense::hover());
+
+    let pie_frac = 0.55_f32;
+    let pie_right = rect.left() + rect.width() * pie_frac;
+    let pie_rect = egui::Rect::from_min_max(rect.min, egui::pos2(pie_right, rect.max.y));
+    let legend_rect = egui::Rect::from_min_max(egui::pos2(pie_right, rect.min.y), rect.max);
+
+    let center = pie_rect.center();
+    let radius = pie_rect.width().min(pie_rect.height()) * 0.35;
+    let painter = ui.painter();
+    let mut start_angle = -std::f32::consts::FRAC_PI_2;
+
+    for (i, (_label, count)) in sorted.iter().enumerate() {
+        let fraction = *count as f32 / total as f32;
+        let sweep = fraction * 2.0 * std::f32::consts::PI;
+        let color = colors[i % colors.len()];
+
+        let n = (30.0 * fraction).ceil().max(3.0) as usize;
+        let mut arc_points = vec![center];
+        for j in 0..=n {
+            let angle = start_angle + sweep * (j as f32 / n as f32);
+            arc_points.push(center + radius * egui::vec2(angle.cos(), angle.sin()));
+        }
+        arc_points.push(center);
+
+        painter.add(Shape::convex_polygon(arc_points, color, Stroke::new(1.0, C_MUTED)));
+
+        if fraction > 0.05 {
+            let mid_angle = start_angle + sweep / 2.0;
+            let label_pos = center + (radius * 0.65) * egui::vec2(mid_angle.cos(), mid_angle.sin());
+            let pct = (fraction * 100.0) as u32;
+            painter.text(
+                label_pos,
+                egui::Align2::CENTER_CENTER,
+                format!("{}%", pct),
+                egui::FontId::proportional(10.0),
+                Color32::WHITE,
+            );
+        }
+
+        start_angle += sweep;
+    }
+
+    painter.circle_stroke(center, radius, Stroke::new(1.0, C_MUTED));
+    painter.circle_filled(center, radius * 0.35, C_BG);
+    painter.text(
+        center,
+        egui::Align2::CENTER_CENTER,
+        &total.to_string(),
+        egui::FontId::proportional(18.0),
+        C_TEXT,
+    );
+
+    // Inline legend on the right with truncation
+    let text_h = 16.0;
+    let mut ly = legend_rect.top() + 4.0;
+    let mut truncated = false;
+    for (i, (label, count)) in sorted.iter().enumerate() {
+        if ly + text_h > legend_rect.bottom() {
+            truncated = true;
+            break;
+        }
+        let color = colors[i % colors.len()];
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(legend_rect.left() + 2.0, ly + 2.0), egui::vec2(10.0, 10.0)),
+            2.0,
+            color,
+        );
+        painter.text(
+            egui::pos2(legend_rect.left() + 16.0, ly + 7.0),
+            egui::Align2::LEFT_CENTER,
+            format!("{}: {}", display_name(label), count),
+            egui::FontId::proportional(11.0),
+            C_TEXT,
+        );
+        ly += text_h;
+    }
+    if truncated {
+        let remaining = sorted.len() - ((ly - legend_rect.top() - 4.0) as usize / text_h as usize);
+        painter.text(
+            egui::pos2(legend_rect.left() + 2.0, ly + 2.0),
+            egui::Align2::LEFT_TOP,
+            format!("... y {} mas", remaining),
+            egui::FontId::proportional(9.0),
+            C_GREY,
+        );
+    }
+}
+
+pub struct ChartsData<'a> {
+    pub por_grupo: &'a HashMap<String, u64>,
+}
+
+pub fn show_charts(ui: &mut egui::Ui, data: &ChartsData) {
+    if data.por_grupo.is_empty() {
+        return;
+    }
+
+    egui::CollapsingHeader::new("Graficos")
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Distribucion por grupo").strong().size(12.0));
+                    bar_chart_view(ui, data.por_grupo, "grupos");
+                });
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.label(egui::RichText::new("Proporcion").strong().size(12.0));
+                    pie_chart_view(ui, data.por_grupo, "proporcion");
+                });
+            });
+        });
+}
+=== src/ui/mod.rs ===
+pub mod sidebar;
+pub mod tabla;
+pub mod redactor_window;
+pub mod widgets;
+pub mod charts;
+pub mod theme;
+=== src/ui/redactor_window.rs ===
+use eframe::egui::{self, Context};
+use crate::db::utils::display_name;
+
+pub fn ui_redactor_window(app: &mut crate::app::App, ctx: &Context) {
+    let mut open = app.redactor_open;
+    egui::Window::new("Redactor")
+        .open(&mut open)
+        .default_size([600.0, 400.0])
+        .show(ctx, |ui| {
+            ui.vertical(|ui| {
+                let ph = app.config.analyse.redactor_placeholders.join(", ");
+                ui.label(format!("Plantilla (usa {}, #NombreColumna):", ph));
+
+                ui.push_id("template_edit", |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut app.redactor.template)
+                            .desired_rows(5)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Ej: Hay #pendientes documentos de #gerencia"),
+                    );
+                });
+
+                // Available columns
+                if !app.data.columnas_tabla.is_empty() {
+                    egui::CollapsingHeader::new("Columnas disponibles")
+                        .default_open(false)
+                        .show(ui, |ui| {
+                            let labels: Vec<String> = app
+                                .data
+                                .columnas_tabla
+                                .iter()
+                                .map(|c| format!("#{}", display_name(&c)))
+                                .collect();
+                            ui.label(labels.join(", "));
+                        });
+                }
+
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    let has_data = !app.data.tabla.is_empty();
+                    if ui
+                        .add_enabled(has_data, egui::Button::new("Redactar"))
+                        .clicked()
+                    {
+                        app.redactor.redactar(&app.data, &app.meta);
+                    }
+                    if !app.redactor.output.is_empty() {
+                        if ui.button("Copiar").on_hover_text("Copiar resultado al portapapeles").clicked() {
+                            ui.ctx().copy_text(app.redactor.output.clone());
+                        }
+                    }
+                });
+
+                if !app.redactor.output.is_empty() {
+                    ui.separator();
+                    ui.label("Resultado:");
+                    ui.push_id("output_view", |ui| {
+                        egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                            let mut out = app.redactor.output.clone();
+                            ui.add(
+                                egui::TextEdit::multiline(&mut out)
+                                    .desired_rows(6)
+                                    .desired_width(f32::INFINITY)
+                                    .font(egui::TextStyle::Monospace)
+                                    .interactive(false),
+                            );
+                        });
+                    });
+                }
+            });
+        });
+    app.redactor_open = open;
+}
+=== src/ui/sidebar.rs ===
+use eframe::egui::{self, Context, Margin, Rounding, Stroke};
+use crate::db::FiltroValor;
+use crate::db::constants::FILTRO_TODOS;
+use crate::db::utils::display_name;
+use crate::ui::theme::C_BG;
+use crate::ui::widgets::{date_picker_widget, hoy_button};
+
+pub fn ui_sidebar(app: &mut crate::app::App, ctx: &Context) {
+    egui::SidePanel::left("sidebar")
+        .resizable(true)
+        .default_width(220.0)
+        .width_range(180.0..=400.0)
+        .show_separator_line(true)
+        .frame(egui::Frame {
+            inner_margin: Margin::same(8.0),
+            outer_margin: Margin::default(),
+            rounding: Rounding::ZERO,
+            shadow: egui::Shadow::NONE,
+            fill: C_BG,
+            stroke: Stroke::NONE,
+        })
+        .show(ctx, |ui| {
+            ui.heading("Filtros");
+
+            // DB path display
+            if let Some(path) = &app.config.default_db {
+                let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default().to_string();
+                ui.horizontal(|ui| {
+                    ui.label("BD:");
+                    ui.label(&name)
+                        .on_hover_text(path.to_string_lossy());
+                });
+            }
+
+            ui.separator();
+            egui::ScrollArea::vertical().id_salt("sidebar_scroll").show(ui, |ui| {
+                for fi in &app.filtros_info {
+                    let nombre = &fi.nombre;
+                    let display = display_name(&nombre);
+                    if let Some(valor) = app.filtros.get_mut(nombre) {
+                        match valor {
+                            FiltroValor::Categorical { selected } |
+                            FiltroValor::CategoricalFK { selected, .. } => {
+                                let prev = selected.clone();
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&display).strong());
+                                    if *selected != FILTRO_TODOS && !selected.is_empty() {
+                                        if ui.button("✕").clicked() {
+                                            *selected = FILTRO_TODOS.to_string();
+                                            app.needs_refresh = true;
+                                        }
+                                    }
+                                });
+                                egui::ComboBox::from_id_salt(format!("flt_{}", nombre))
+                                    .width(ui.available_width())
+                                    .selected_text(if selected.is_empty() || selected == FILTRO_TODOS {
+                                        "Todos".to_string()
+                                    } else {
+                                        selected.clone()
+                                    })
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(selected, FILTRO_TODOS.to_string(), "Todos");
+                                        if let Some(ref vals) = fi.valores {
+                                            for v in vals {
+                                                ui.selectable_value(selected, v.clone(), v);
+                                            }
+                                        }
+                                    });
+                                if prev != *selected { app.needs_refresh = true; }
+                            }
+                            FiltroValor::Date { desde, hasta } => {
+                                ui.label(egui::RichText::new(&display).strong());
+                                ui.horizontal(|ui| {
+                                    ui.label("Desde:");
+                                    let prev = desde.clone();
+                                    date_picker_widget(ui, desde, "Desde", &format!("cal_{}", nombre), &mut app.needs_refresh);
+                                    hoy_button(ui, desde, &mut app.needs_refresh);
+                                    if prev != *desde { app.needs_refresh = true; }
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Hasta:");
+                                    let prev = hasta.clone();
+                                    date_picker_widget(ui, hasta, "Hasta", &format!("cal_{}_hasta", nombre), &mut app.needs_refresh);
+                                    hoy_button(ui, hasta, &mut app.needs_refresh);
+                                    if prev != *hasta { app.needs_refresh = true; }
+                                });
+                            }
+                            FiltroValor::Numeric { min, max, orig_min, orig_max } => {
+                                let (lo, hi) = if *orig_min < *orig_max { (*orig_min, *orig_max) } else { (*orig_max, *orig_min) };
+                                let range = if (hi - lo).abs() < f64::EPSILON { lo..=lo + 1.0 } else { lo..=hi };
+                                let is_int = lo.fract() == 0.0 && hi.fract() == 0.0;
+                                ui.label(egui::RichText::new(&display).strong());
+                                let prev = [*min, *max];
+                                ui.vertical(|ui| {
+                                    let mut sl_min = egui::Slider::new(min, range.clone()).text("Mín");
+                                    let mut sl_max = egui::Slider::new(max, range).text("Máx");
+                                    if is_int {
+                                        sl_min = sl_min.fixed_decimals(0);
+                                        sl_max = sl_max.fixed_decimals(0);
+                                    }
+                                    ui.add(sl_min);
+                                    ui.add(sl_max);
+                                });
+                                if *min > *max { *max = *min; }
+                                if prev != [*min, *max] { app.needs_refresh = true; }
+                            }
+                            FiltroValor::TextSearch { query } => {
+                                ui.label(egui::RichText::new(&display).strong());
+                                let prev = query.clone();
+                                ui.text_edit_singleline(query);
+                                if prev != *query { app.needs_refresh = true; }
+                            }
+                        }
+                    }
+                }
+            });
+        });
+}
+=== src/ui/tabla.rs ===
+use eframe::egui;
+use egui_extras::{Column, TableBuilder};
+use crate::db::utils::display_name;
+
+pub fn ui_tabla(app: &mut crate::app::App, ui: &mut egui::Ui) {
+    let col_names = app.data.columnas_tabla.clone();
+    let rows = app.data.tabla.clone();
+    if col_names.is_empty() {
+        if app.error.is_none() {
+            ui.label("Sin datos");
+        }
+        return;
+    }
+
+    egui::ScrollArea::horizontal().show(ui, |ui| {
+        let mut table = TableBuilder::new(ui)
+            .striped(true)
+            .resizable(true)
+            .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+            .min_scrolled_height(300.0);
+        for _ in &col_names {
+            table = table.column(Column::initial(100.0).at_least(60.0).resizable(true));
+        }
+        table
+            .header(22.0, |mut header| {
+                for col in &col_names {
+                    header.col(|ui| {
+                        ui.strong(display_name(&col));
+                    });
+                }
+            })
+            .body(|mut body| {
+                for row_data in &rows {
+                    body.row(18.0, |mut row| {
+                        for col in &col_names {
+                            row.col(|ui| {
+                                let val = row_data.get(col).map(|v| match v {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    serde_json::Value::Number(n) => n.to_string(),
+                                    serde_json::Value::Null => String::new(),
+                                    _ => format!("{}", v),
+                                }).unwrap_or_default();
+                                ui.label(val);
+                            });
+                        }
+                    });
+                }
+            });
+    });
+
+    // Pagination
+    ui.separator();
+    if app.data.total_general == 0 {
+        ui.label("Sin resultados");
+        return;
+    }
+    ui.horizontal(|ui| {
+        let total_pages = (app.data.total_general as f64 / app.data.page_size as f64).ceil() as usize;
+
+        let prev_btn = ui.add_enabled(app.data.current_page > 1, egui::Button::new("⬅ Anterior"));
+        if prev_btn.clicked() {
+            app.data.current_page = app.data.current_page.saturating_sub(1);
+            app.needs_refresh = true;
+        }
+
+        ui.label("Página");
+        let mut page_str = app.data.current_page.to_string();
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut page_str)
+                .desired_width(40.0)
+        );
+        if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if let Ok(p) = page_str.parse::<usize>() {
+                if p >= 1 && p <= total_pages.max(1) {
+                    app.data.current_page = p;
+                    app.needs_refresh = true;
+                }
+            }
+        }
+        ui.label(format!("de {}", total_pages.max(1)));
+
+        let next_btn = ui.add_enabled(app.data.current_page < total_pages, egui::Button::new("Siguiente ➡"));
+        if next_btn.clicked() {
+            app.data.current_page = app.data.current_page.saturating_add(1);
+            app.needs_refresh = true;
+        }
+    });
+}
+=== src/ui/theme.rs ===
+use eframe::egui::{Color32, Rounding, Stroke, Visuals};
+
+// Nord Light palette
+pub const C_BG: Color32 = Color32::from_rgb(236, 239, 244);
+pub const C_SURF: Color32 = Color32::from_rgb(229, 233, 240);
+pub const C_MUTED: Color32 = Color32::from_rgb(216, 222, 233);
+pub const C_TEXT: Color32 = Color32::from_rgb(46, 52, 64);
+pub const C_GREY: Color32 = Color32::from_rgb(76, 86, 106);
+pub const C_BLUE: Color32 = Color32::from_rgb(136, 192, 208);
+pub const C_DKBLUE: Color32 = Color32::from_rgb(129, 161, 193);
+pub const C_SEL: Color32 = Color32::from_rgb(94, 129, 172);
+pub const C_RED: Color32 = Color32::from_rgb(191, 97, 106);
+pub const C_GREEN: Color32 = Color32::from_rgb(163, 190, 140);
+pub const C_ORANGE: Color32 = Color32::from_rgb(208, 135, 112);
+
+pub fn nord_colors() -> Vec<Color32> {
+    vec![
+        Color32::from_rgb(136, 192, 208),
+        Color32::from_rgb(163, 190, 140),
+        Color32::from_rgb(208, 135, 112),
+        Color32::from_rgb(191, 97, 106),
+        Color32::from_rgb(129, 161, 193),
+        Color32::from_rgb(143, 188, 187),
+        Color32::from_rgb(180, 142, 173),
+        Color32::from_rgb(235, 203, 139),
+    ]
+}
+
+pub fn nord_light() -> Visuals {
+    use eframe::egui::style::{HandleShape, NumericColorSpace, Selection, TextCursorStyle, WidgetVisuals, Widgets};
+    let r4 = Rounding { nw: 4.0, ne: 4.0, sw: 4.0, se: 4.0 };
+    let wv = |fill| WidgetVisuals {
+        bg_fill: fill, weak_bg_fill: fill,
+        bg_stroke: Stroke::new(1.0, C_MUTED),
+        fg_stroke: Stroke::new(1.0, C_TEXT),
+        rounding: r4, expansion: 0.0,
+    };
+    Visuals {
+        dark_mode: false,
+        override_text_color: Some(C_TEXT),
+        widgets: Widgets {
+            noninteractive: wv(C_SURF), inactive: wv(C_SURF),
+            hovered: wv(C_BLUE), active: wv(C_DKBLUE), open: wv(C_SURF),
+        },
+        selection: Selection { bg_fill: C_SEL.linear_multiply(0.4), stroke: Stroke::new(1.0, C_SEL) },
+        hyperlink_color: C_DKBLUE,
+        faint_bg_color: C_BG, extreme_bg_color: C_MUTED, code_bg_color: C_SURF,
+        warn_fg_color: C_ORANGE, error_fg_color: C_RED,
+        window_rounding: r4,
+        window_shadow: eframe::egui::Shadow::NONE, window_fill: C_BG,
+        window_stroke: Stroke::new(1.0, C_MUTED), window_highlight_topmost: false,
+        menu_rounding: r4, panel_fill: C_BG,
+        popup_shadow: eframe::egui::Shadow::NONE, resize_corner_size: 4.0,
+        text_cursor: TextCursorStyle::default(), clip_rect_margin: 0.0,
+        button_frame: true, collapsing_header_frame: false, indent_has_left_vline: false,
+        striped: false, slider_trailing_fill: false, handle_shape: HandleShape::Circle,
+        interact_cursor: None, image_loading_spinners: false,
+        numeric_color_space: NumericColorSpace::GammaByte,
+    }
+}
+=== src/ui/widgets.rs ===
+use eframe::egui::{self, Color32, Rounding, Stroke, PopupCloseBehavior};
+use chrono::{NaiveDate, Datelike, Local, Duration};
+
+use crate::db::constants::{DATE_FORMAT, DATE_FORMAT_HINT};
+use crate::db::utils::safe_date_parse;
+use crate::ui::theme::{C_SURF, C_MUTED, C_GREY, C_BG};
+
+pub fn metric_card(ui: &mut egui::Ui, title: &str, value: u64, accent: Color32) {
+    let height = 64.0;
+    let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    let bg_rect = r.shrink(2.0);
+    ui.painter().rect_filled(bg_rect, Rounding::same(6.0), C_SURF);
+    ui.painter().rect_stroke(bg_rect, Rounding::same(6.0), Stroke::new(1.0, C_MUTED));
+    let accent_rect = egui::Rect::from_min_size(
+        egui::pos2(bg_rect.left(), bg_rect.top() + 4.0),
+        egui::vec2(3.0, bg_rect.height() - 8.0),
+    );
+    ui.painter().rect_filled(accent_rect, Rounding::same(2.0), accent);
+    ui.painter().text(
+        egui::pos2(bg_rect.left() + 12.0, bg_rect.top() + 16.0),
+        egui::Align2::LEFT_TOP,
+        title,
+        egui::FontId::proportional(11.0),
+        C_GREY,
+    );
+    ui.painter().text(
+        egui::pos2(bg_rect.left() + 12.0, bg_rect.bottom() - 8.0),
+        egui::Align2::LEFT_BOTTOM,
+        &format!("{}", value),
+        egui::FontId::proportional(22.0),
+        accent,
+    );
+}
+
+pub fn hoy_button(ui: &mut egui::Ui, date_str: &mut String, needs_refresh: &mut bool) {
+    if ui.button("Hoy").clicked() {
+        *date_str = Local::now().format(DATE_FORMAT).to_string();
+        *needs_refresh = true;
+    }
+}
+
+pub fn date_picker_widget(ui: &mut egui::Ui, date_str: &mut String, _label: &str, popup_id: &str, needs_refresh: &mut bool) {
+    let resp = ui.add(egui::TextEdit::singleline(date_str).hint_text(DATE_FORMAT_HINT));
+    if resp.clicked() {
+        ui.memory_mut(|mem| mem.toggle_popup(egui::Id::new(popup_id)));
+    }
+    egui::popup::popup_below_widget(ui, egui::Id::new(popup_id), &resp, PopupCloseBehavior::CloseOnClick, |ui: &mut egui::Ui| {
+        ui.set_min_width(200.0);
+        let today = Local::now().naive_local().date();
+        let current = safe_date_parse(date_str, today);
+
+        let mut year = current.year();
+        let mut month = current.month();
+        let day = current.day();
+
+        ui.horizontal(|ui| {
+            if ui.button("◀").clicked() {
+                if month == 1 { month = 12; year -= 1; } else { month -= 1; }
+            }
+            ui.label(format!("{:02}/{}", month, year));
+            if ui.button("▶").clicked() {
+                if month == 12 { month = 1; year += 1; } else { month += 1; }
+            }
+        });
+
+        let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap_or(today);
+        let days_in_month = {
+            let next = if month == 12 {
+                NaiveDate::from_ymd_opt(year + 1, 1, 1)
+            } else {
+                NaiveDate::from_ymd_opt(year, month + 1, 1)
+            }.unwrap_or_else(|| today + Duration::days(32));
+            (next - Duration::days(1)).day()
+        };
+        let start_wd = first.weekday().num_days_from_monday() as usize;
+
+        ui.horizontal(|ui| {
+            for wd in &["L", "M", "M", "J", "V", "S", "D"] {
+                ui.label(egui::RichText::new(*wd).weak().size(10.0));
+            }
+        });
+        let cell_w = 28.0;
+        let mut day_idx = 0i64;
+        let mut day_pos = 0usize;
+        for row in 0..6 {
+            if day_idx >= days_in_month as i64 { break; }
+            ui.horizontal(|ui| {
+                for col in 0..7 {
+                    if row == 0 && col < start_wd {
+                        ui.add_sized(egui::vec2(cell_w, 18.0), egui::Label::new(""));
+                    } else if day_idx < days_in_month as i64 {
+                        let d = (day_idx + 1) as u32;
+                        let selected = d == day && month == current.month() && year == current.year();
+                        let btn = egui::Button::new(format!("{}", d))
+                            .min_size(egui::vec2(cell_w, 18.0))
+                            .fill(if selected { C_SURF } else { C_BG });
+                        if ui.add(btn).clicked() {
+                            if let Some(date) = NaiveDate::from_ymd_opt(year, month, d) {
+                                *date_str = date.format(DATE_FORMAT).to_string();
+                            }
+                            *needs_refresh = true;
+                            ui.memory_mut(|mem| mem.close_popup());
+                        }
+                        day_idx += 1;
+                        day_pos += 1;
+                    }
+                }
+            });
+        }
+    });
+}
+=== doc.md ===
+# Reporte de Contrataciones — Documentación
+
+## Arquitectura
+
+App 100% Rust. **egui (immediate-mode) = UI** | **rusqlite = Data Layer**.
+Sin Python, sin bridge, sin runtime externo. Compila a un solo binario.
+
+```
+┌───────────────────────────────────┐
+│  Rust (egui + eframe)             │
+│  ├── src/app.rs  — estado + UI    │
+│  ├── src/db/     — layer universal │
+│  │   (sin modificar)              │
+│  ├── src/export  — Excel/PDF      │
+│  └── src/redactor — plantillas    │
+│                                   │
+│  SQLite ←────────────────────────┤
+│  [cualquier .db / .sqlite]        │
+└───────────────────────────────────┘
+```
+
+## Principio Fundamental
+
+**Cero hardcodeo. Cero naming conventions. Cero assumptions del schema.**
+
+Todo se genera dinámicamente analizando la BD al abrirla:
+- Tablas/vistas disponibles → selector en UI
+- Columnas → detección de tipo (categorical, categorical_fk, date, numeric, text_search)
+- Filtros → widgets generados según tipo (ComboBox, sliders, búsqueda)
+- La tabla muestra cualquier columna, cualquier schema
+
+## Algoritmo Universal de Detección de Columnas
+
+```
+Para cada columna en la tabla/vista seleccionada:
+┌───────────────────────────────────────────────────────────────┐
+│  CONDICIÓN                          → TIPO FILTRO             │
+├───────────────────────────────────────────────────────────────┤
+│  TYPE = DATE/DATETIME/TIMESTAMP     → DateRange               │
+│  TYPE = REAL/FLOAT/DOUBLE/NUMERIC   → Range Slider            │
+│    con pocos valores distintos      → ComboBox (categórico)   │
+│  TEXT + ≤50 valores distintos       → ComboBox (categórico)   │
+│    + promedio largo < 80 chars                                │
+│  TEXT + >50 valores distintos       → TextSearch              │
+│  TEXT + promedio largo > 80 chars   → Omitido (descripción)   │
+│  INTEGER + ≤50 valores distintos    → ComboBox                │
+│  INTEGER + >50 valores             → Omitido (probable PK)    │
+│  PK flag (PRAGMA table_info)       → Omitido                  │
+│  FK ref → tabla_catalogo           → ComboBox con nombres     │
+└───────────────────────────────────────────────────────────────┘
+```
+
+Sin mirar nombres de tablas, sin prefijos `cat_`, sin heurísticas de nombre.
+Puro análisis de tipos + valores distintos + longitud promedio.
+
+## Esquema de Colores
+
+Nord Light — variante clara de la paleta Nord:
+- Fondo: `#ECEFF4` | Superficie: `#E5E9F0` | Bordes: `#D8DEE9`
+- Texto: `#2E3440` | Secundario: `#4C566A`
+- Acento: `#88C0D0` (hover) | `#81A1C1` (active) | `#5E81AC` (selección)
+
+## Estructura del Proyecto
+
+```
+reporte_contrataciones_4/
+├── Cargo.toml            # eframe 0.29 + egui + rusqlite + serde + rfd + chrono
+├── Makefile              # build / run / clean / combine
+├── doc.md                # Esta documentación
+├── src/
+│   ├── main.rs           # Entry point, ventana 1400x900
+│   ├── app.rs            # Estado global, UI panels, tema Nord Light
+│   ├── config.rs         # Detección automática de rutas portable
+│   ├── export.rs         # Exportación Excel + PDF + PPTX
+│   ├── redactor.rs       # Plantillas de texto con placeholders
+│   ├── db/               # Layer universal (NO MODIFICAR)
+│   │   ├── mod.rs, types.rs, schema.rs, analysis.rs
+│   │   ├── dashboard.rs, explorer.rs
+│   │   ├── constants.rs, utils.rs
+│   └── ui/               # UI panels + widgets
+│       ├── sidebar.rs    # Panel de filtros laterales
+│       ├── tabla.rs      # Tabla virtualizada
+│       ├── redactor_window.rs
+│       ├── widgets.rs    # Componentes reutilizables (metric_card)
+│       ├── charts.rs     # Gráficos
+│       └── theme.rs      # Paleta Nord Light
+├── data/                 # Ubicación por defecto de .db / .sqlite
+├── output/               # Archivos exportados
+├── Tablas3.sql           # Schema de ejemplo
+├── Inserts2.sql          # Datos de ejemplo
+└── python/               # Scripts originales (legacy)
+```
+
+## UI
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  Explorador BD  [Abrir BD] [Excel] [PDF] [Redactor]      │
+├──────────────┬───────────────────────────────────────────┤
+│  FILTROS     │  Tabla/Vista: [vw_reporte...        ▼]   │
+│  (dinámicos) │                                           │
+│              │  Pendientes: 12 | Firmados: 45 | Total: 57│
+│  columna1    │  ──────────────────────────────────────── │
+│  [Todos ▼]   │  Agrupar por: [Ninguno     ▼]            │
+│  columna2    │  ──────────────────────────────────────── │
+│  [Todos ▼]   │  ┌── TABLA (scroll H+V) ────────────┐   │
+│  col_fecha   │  │ Col1 │ Col2 │ Col3 │ Col4 │ ...  │   │
+│  [desde]     │  ├──────┼──────┼──────┼──────┼──────┤   │
+│  [hasta]     │  │ val1 │ val2 │ val3 │ val4 │ ...  │   │
+│  col_monto   │  │ ...                              │   │
+│  [min═══max] │  └──────────────────────────────────┘   │
+│  col_texto   │  < Página 1 de 10 >  Tamano: [50][100]  │
+│  [buscar]    │                                           │
+└──────────────┴───────────────────────────────────────────┘
+```
+
+### Sidebar (filtros dinámicos)
+
+| Tipo detectado    | Widget egui                |
+|-------------------|----------------------------|
+| `categorical`     | `ComboBox` con valores     |
+| `categorical_fk`  | `ComboBox` con nombres cat |
+| `date`            | 2x `text_edit` (desde/hasta) |
+| `numeric`         | 2x `Slider` (min/max)      |
+| `text_search`     | `text_edit_singleline`     |
+
+### Panel central
+
+1. **Selector de tabla/vista**: dropdown con todas las tablas y vistas de la BD
+2. **Métricas**: Pendientes | Firmados | Total | Coinciden
+3. **Group-By**: dropdown con todas las columnas de la tabla actual
+4. **Tabla virtualizada**: scroll horizontal + vertical, columnas redimensionables
+5. **Paginación**: < Página N de M > con selector de tamaño (50/100/200/500)
+
+## Redactor de Reportes
+
+Ventana flotante para escribir plantillas con placeholders:
+- `#total`, `#pendientes`, `#firmados` → métricas
+- `#nombre_columna` → valores de esa columna en los datos filtrados
+
+## Dependencias (Cargo.toml)
+
+| Crate            | Versión | Propósito                    |
+|------------------|---------|------------------------------|
+| `eframe`         | 0.29    | Ventana + loop de eventos    |
+| `egui`           | 0.29    | UI immediate-mode            |
+| `egui_extras`    | 0.29    | Tabla virtualizada           |
+| `rusqlite`       | 0.34    | SQLite (bundled)             |
+| `serde/serde_json`| 1      | Serialización                |
+| `rfd`            | 0.15    | File dialog                  |
+| `open`           | 5       | Abrir carpeta/archivos       |
+| `chrono`         | 0.4     | Timestamps                   |
+| `rust_xlsxwriter`| 0.82    | Exportar Excel               |
+| `printpdf`       | 0.7     | Exportar PDF (imagen embebida)|
+| `image`          | 0.24    | Procesar screenshot > PNG    |
+| `pptx`           | 0.1     | Exportar PPTX                |
+
+## Makefile
+
+```bash
+make build       # cargo build
+make release     # cargo build --release
+make run         # cargo run
+make clean       # cargo clean + rm combined.txt
+make combine     # concatena todo el código en combined.txt
+```
+
+## Reglas del Proceso
+
+1. **doc.md primero**: antes de cualquier implementación o cambio de código, actualizar esta documentación con lo que se planea hacer.
+2. **Makefile siempre**: después de cambios, ejecutar `make build` y `make combine`.
+3. **Sin hardcodeo**: cero assumptions de naming conventions. Toda heurística debe ser configurable.
+4. **Historial de cambios**: cada cambio debe agregarse a la cronología en `doc.md` con fecha, archivo, y razón.
+5. **DRY + Reutilización**: toda pieza de lógica debe tener una representación única. No repetir código ni copiar-pegar bloques. Si un patrón aparece en más de un lugar, extraer a función reutilizable. La modularidad no se mide en líneas por archivo ni por función, sino en ausencia de redundancia y en que cada función tenga una única responsabilidad (SRP). Una función de 200 líneas sin duplicación interna es mejor que 4 funciones de 50 líneas con lógica repetida.
+
+---
+
+## Cambios Realizados (Septiembre 2026)
+
+### Dead Code
+El código muerto se **conserva** con `#[allow(dead_code)]` — son planned features pendientes de implementar.
+
+### 1. `total_matching` corregido (dashboard.rs)
+- Antes: siempre igual a `total_general` (ambos con filtros).
+- Ahora: `total_matching` cuenta registros sin filtros, `total_general` con filtros. La tarjeta "Coinciden" ahora muestra el universo total vs. el subconjunto filtrado.
+
+### 2. `PDF_ROW_LIMIT` usado (export.rs)
+- Usa `db::constants::PDF_ROW_LIMIT` en vez del literal `200`.
+
+### 3. Regla de documentación
+- `doc.md` se actualiza **siempre antes** de cualquier implementación o cambio de código.
+- `make build && make combine` se ejecuta después de cada cambio.
+
+---
+
+## Fixes Aplicados (Junio 2026)
+
+### 🔴 SQL (Group A) — Completado
+
+| # | Issue | Archivo | Cambio |
+|---|---|---|---|
+| 1.1 | SQL Injection en pattern | `dashboard.rs` | `pattern` escapado con `.replace('\'', "''")` antes de interpolarlo en LIKE |
+| 1.2 | PK hardcodeado `id` en subquery FK | `dashboard.rs: construir_where` | Nueva función `detectar_pk_columna()` vía `PRAGMA table_info`. `construir_where` acepta `conn`, cachea PKs detectadas en un HashMap |
+| 1.3 | PK hardcodeado `id` en JOINs | `dashboard.rs / explorer.rs` | Campo `pk_col` agregado a `FKOptimizada`. Se detecta en `explorer.rs` con `detectar_pk_columna()`. JOIN usa `fk.pk_col` |
+| 1.5 | Patrones hardcodeados en detección | `analysis.rs: detectar_columna_estado` | Acepta `pending_pattern`/`signed_pattern` como parámetros. Caller `app.rs` pasa `config.pending_pattern/signed_pattern` |
+| 1.6 | INTEGER >50 → None | `analysis.rs: analizar_columna` | Fall through a `numeric` con `MIN/MAX` y slider de rango |
+
+### 🟠 UI/UX (Group B) — Completado
+
+| # | Issue | Archivo | Cambio |
+|---|---|---|---|
+| 2.3 | Slider min > max | `sidebar.rs` | `if *min > *max { *max = *min; }` post-cambio |
+| 2.4 | Slider min == max | `sidebar.rs` | Range padding: `lo..=lo + 1.0` si `(hi - lo).abs() < f64::EPSILON` |
+| 2.5 | Paginación "Página 1 de 1" | `tabla.rs` | `if total_general == 0 { ui.label("Sin resultados"); return; }` |
+| 2.6 | Columnas ancho fijo | `tabla.rs` | `Column::initial(100.0).at_least(60.0).resizable(true)` |
+
+### 🟡 Cleanup (Group C) — Completado
+
+| # | Issue | Archivo | Cambio |
+|---|---|---|---|
+| 6.6 | Magic string `"__todos__"` | `constants.rs`, `app.rs`, `sidebar.rs`, `dashboard.rs` | `pub const FILTRO_TODOS: &str = "__todos__"` usado en todos los lugares |
+
+---
+
+## Fixes Segunda Revisión (Julio 2026) — Completado ✓
+
+**Verificado en combined.txt (Agosto 2026)**: Todos los fixes aplicados correctamente.
+
+### 🔴 Crítico (SQL)
+
+| # | Issue | Archivo | Fix | Estado |
+|---|---|---|---|---|
+| 1.1/1.2 | UPPER() sin normalizar pattern | `analysis.rs`, `dashboard.rs` | `.to_uppercase()` aplicado al pattern | ✓ |
+| 1.7 | Fallback `"id"` revive bug PK | `dashboard.rs: construir_where` | Fallback cambiado a `"rowid"` | ✓ |
+
+### 🟠 Importante (UX)
+
+| # | Issue | Archivo | Fix | Estado |
+|---|---|---|---|---|
+| 1.5b | Label "Coinciden" engañoso | `app.rs` | Renombrado a "Universo" | ✓ |
+| 2.1 | Loading overlay borra contenido | `app.rs` | Overlay semitransparente (alpha 180) | ✓ |
+| 2.5 | Slider muestra `50.000000` | `sidebar.rs` | `fixed_decimals(0)` si enteros | ✓ |
+
+### 🟡 Mantenibilidad
+
+| # | Issue | Archivo | Fix | Estado |
+|---|---|---|---|---|
+| 5.1 | `detectar_dependencias` costoso | `explorer.rs` | Solo si ≥2 cols categóricas | ✓ |
+
+**Nota**: La "Tercera Revisión (Agosto 2026)" describe bugs ya corregidos. El código actual en `combined.txt` tiene todos los fixes aplicados.
+
+---
+
+### Dead Code — Limpieza y Refactor SQL (Septiembre 2026) ✓
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 1 | `src/redactor.rs` | Eliminado campo `visible` | Redundante: `redactor_open` en `App` ya controla la ventana |
+| 2 | `src/db/constants.rs` | Eliminado `FK_SAMPLE_LIMIT` | Violaba DRY: `analysis.rs` ya usa `MAX_CATEGORICAL_VALUES * 2` |
+| 3 | `src/db/types.rs` | Quitados `#[allow(dead_code)]` de `ModoOptimizacion` | Métodos integrados como ciudadanos de primera clase |
+| 4 | `src/db/dashboard.rs` | Refactor: consultas parametrizadas (`?`) + uso de `es_universal()`, `tabla_base()`, `fks()` | Inmunidad SQL injection + eliminación de `match` anidados |
+| 5 | `src/db/mod.rs` | Eliminado `pub mod optimization;` | Archivo removido |
+| 6 | `src/db/optimization.rs` | **Borrado** | Violaba principio "Layer universal (sin modificar)" — la app no debe alterar el schema |
+
+**SQL Parametrizado**: `construir_where` retorna `(String, Vec<Box<dyn ToSql>>)` con placeholders `?`. Los valores se pasan por separado a `rusqlite`. Se eliminó todo escape manual (`replace('\'', "''")`).
+
+---
+
+### Exportación PPTX + Screenshot + Dead Code (Junio 2026) ✓
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 1 | `src/export.rs` | Nueva función `exportar_pdf_with_screenshot` | Exporta dashboard como imagen embebida en PDF (`printpdf::Image::from_dynamic_image`) |
+| 2 | `src/export.rs` | Nueva función `exportar_pptx_with_screenshot` | Exporta dashboard como imagen en presentación PPTX |
+| 3 | `src/app.rs` | Campos `ExportFormat`, `pending_export`, lógica de `ViewportCommand::Screenshot` | Captura screenshot del viewport y lo envía como PNG a export |
+| 4 | `src/app.rs` | Botón PPTX en `ui_top_panel` | Interfaz para exportar PPTX |
+| 5 | `src/export.rs` | Eliminadas `truncate()` y `exportar_pdf()` (table-based) | Reemplazadas por screenshot-based, ya no se usan |
+| 6 | `src/config.rs` | Eliminado campo `project_root` | Nunca se leía externamente, dead code |
+| 7 | `src/db/types.rs` | Eliminados `vista()` method y campo `vista` de `VistaConFKs` | Dead code — nunca se llamaban |
+| 8 | `src/db/explorer.rs` | Eliminado `vista: vista.to_string()` en constructor `VistaConFKs` | Consecuencia de #7 |
+| 9 | `.gitignore` | Creado con ignore de `target/`, `output/`, `combined.txt`, `*.db`, `*.sqlite` | Preparación para GitHub |
+| — | `Cargo.toml` | Agregados `image`, `pptx`. Evaluados y **conservados** todos los crates. | `chrono`, `open`, `serde`, `rust_xlsxwriter`, `printpdf`, `rfd`, `egui_plot`, `rusqlite` — todos en uso activo |
+
+**Observación**: Se evaluó migrar de `printpdf` a `genpdf`, pero `genpdf` requiere archivos TTF externos (no embebidos), lo que viola "compila a un solo binario". `printpdf` con built-in fonts funciona sin dependencias externas y los 2 bugs de compilación (PdfLayerReference no-Clone, shadowing de `image`) ya están corregidos.
+
+---
+
+## Auditoría y Fixes (Julio 2026)
+
+### Regla: Cero Hardcodeo — Configuración de Detección
+
+Se agregó `AnalyseConfig` en `db/constants.rs` con parámetros configurables vía env vars:
+
+| Variable | Default | Uso |
+|---|---|---|
+| `CATALOG_PREFIX` | `cat_` | Prefijo de tablas catálogo para optimización JOIN |
+| `FK_ID_PREFIX` | `id_` | Prefijo de columnas FK para generar nombre display |
+| `PREFERRED_NAME_COLS` | `nombre,name,descripcion,desc` | Columnas preferidas como nombre display en catálogos |
+| `EXCLUDE_ID_PREFIX` | `id` | Prefijo de columnas a excluir como nombre display |
+| `EXCLUDE_NAME_COLS` | `created_at,updated_at` | Columnas a excluir como nombre display |
+
+### Fixes — Primera Ronda
+
+| # | Archivo | Cambio | Razón |
+|---|---|---|---|
+| 1 | `db/dashboard.rs` | `unwrap_or(0)` → `?` en `total_general`, `total_matching`, `contar_por_estado` | Errores SQL silenciados impedían debugging |
+| 2 | `db/analysis.rs` | LIKE con interpolación → bound parameters (`?`) en `detectar_columna_estado` | SQL injection potencial |
+| 3 | `db/analysis.rs` | `strip_prefix("id_")` → `config.fk_id_prefix` | Assumption hardcodeada |
+| 4 | `db/analysis.rs` | `["nombre","name","descripcion","desc"]` → `config.preferred_name_cols` | Assumption hardcodeada |
+| 5 | `db/explorer.rs` | `starts_with("cat_")` → `config.catalog_prefix` | Assumption hardcodeada |
+| 6 | `db/explorer.rs` | `strip_prefix("id_")` → `config.fk_id_prefix` | Assumption hardcodeada |
+| 7 | `db/schema.rs` | `"vw_reporte_excel_contrataciones"` eliminado como preferido absoluto; solo heurística | Nombre específico de BD de ejemplo hardcodeado |
+| 8 | `config.rs` | Nuevos campos: `catalog_prefix`, `fk_id_prefix`, `preferred_name_cols` | Soportar los nuevos parámetros vía env |
+| 9 | `app.rs` | Thread `AnalyseConfig` a través de `explorar`, `detectar_patron_optimizable`, `analizar_columna` | Pasar configuración a la capa de detección |
+
+### Fixes — Segunda Ronda (residuales)
+
+| # | Archivo | Cambio | Razón |
+|---|---|---|---|
+| 10 | `db/analysis.rs` | `"id"` fallback en `construir_mapeo_dependencia` → `detectar_pk_columna()` | Fallback a `rowid` en vez de asumir `id` |
+| 11 | `db/analysis.rs` | `starts_with("id")` y `"created_at","updated_at"` en `detectar_columna_nombre` → `config.exclude_id_prefix` / `config.exclude_name_cols` | Assumptions hardcodeadas |
+| 12 | `db/analysis.rs` | Literales `25`, `50`, `0.8` en detección de estado → `STATUS_SHORT_LENGTH_THRESHOLD`, `MAX_CATEGORICAL_VALUES`, `STATUS_SHORT_RATIO_THRESHOLD` | Thresholds no configurables |
+| 13 | `db/constants.rs` | Nuevas constantes `STATUS_SHORT_LENGTH_THRESHOLD`, `STATUS_SHORT_RATIO_THRESHOLD` y campos `exclude_id_prefix`, `exclude_name_cols` en `AnalyseConfig` | Soportar configuración |
+| 14 | `config.rs` | Nuevas env vars `EXCLUDE_ID_PREFIX`, `EXCLUDE_NAME_COLS` | Soportar configuración |
+| 15 | `export.rs` | `500` literal → `constants::TABLE_LIMIT` | Constante ya existente no usada |
+
+### Refactors — Tercera Ronda (deuda técnica)
+
+| # | Archivo | Cambio | Razón |
+|---|---|---|---|
+| 16 | `db/dashboard.rs` | `construir_where` extraído en 5 funciones privadas por tipo de filtro | Regla #5: función >80 líneas |
+| 17 | `app.rs` | `seleccionar_tabla` dividido en `clear_selection` + `load_and_analyse_table` | Regla #5: única responsabilidad |
+| 18 | `export.rs` | Creado `ensure_dir` helper, eliminada duplicación de `create_dir_all` en 4 lugares | DRY |
+
+### Fixes — Cuarta Ronda (residuales finales)
+
+| # | Archivo | Cambio | Razón |
+|---|---|---|---|
+| 19 | `app.rs` | `self.conn.as_ref().unwrap()` → `if let Some(conn)` | Panic silencioso si conn es None |
+| 20 | `db/dashboard.rs` | `m.tabla_base().unwrap()` → `if let Some(tb)` | Panic si modo cambia en el futuro |
+| 21 | `db/analysis.rs` | `.unwrap_or(0)` → `.unwrap_or_else(\|\| { eprintln!(...); 0 })` en 3 lugares | Errores silenciosos sin trazabilidad |
+| 22 | `db/constants.rs` | Nuevo campo `view_keywords` en `AnalyseConfig`, nueva constante `MIN_FK_COUNT_FOR_OPTIMIZATION` | Strings de schema y threshold hardcodeados |
+| 23 | `config.rs` | Nueva env var `VIEW_KEYWORDS` | Soportar configuración |
+| 24 | `db/schema.rs` | `encontrar_vista_principal` acepta `view_keywords` en vez de strings literales | Assumptions hardcodeadas |
+| 25 | `db/explorer.rs` | Usa `ac.view_keywords` y `MIN_FK_COUNT_FOR_OPTIMIZATION` en vez de strings literales | Assumptions hardcodeadas |
+
+### Features — UI/UX (Octubre 2026)
+
+| # | Archivo | Cambio | Razón |
+|---|---|---|---|
+| 26 | `db/constants.rs` | Nueva constante `DEFAULT_PAGE_SIZE = 10` | Paginación por defecto más manejable |
+| 27 | `db/types.rs` | `DashboardData::default().page_size` ahora es 10 | Consistencia con constante |
+| 28 | `ui/tabla.rs` | Paginación simplificada: solo 10 por página, input numérico para ir a página específica, eliminados selectores 50/100/200/500 | UX más limpio |
+| 29 | `ui/sidebar.rs` | Campos de fecha: botón "Hoy" que inserta fecha actual, y calendario popup al clickear el campo | UX de fechas mejorado |
+| 30 | `ui/widgets.rs` | Nueva función `date_picker_widget` para calendario emergente | Reutilizable |
+| 31 | `db/explorer.rs` | CRITERIO 1b: tablas cat_* retornan `Universal` en vez de `VistaConFKs` | Bugfix: cat_* seleccionadas usaban modo VistaConFKs contra expedientes, causando `no such column: tb.id` |
+| 32 | `db/dashboard.rs` | Fix audit: ORDER BY en paginación, GROUP BY consistente con SELECT CAST, CAST redundante eliminado de LIKE/UPPER | Auditoría SQL: Fix #1, #2, #4 — orden determinístico, SQL portable, sin CAST innecesario |
+| 33 | `config.rs` | Centralizados defaults: `AnalyseConfig::default()` como única fuente de verdad, eliminada duplicación de strings | DRY: config.rs ya no repite valores de constants.rs |
+| 34 | `ui/widgets.rs` | `NaiveDate::from_ymd_opt().unwrap()` → `unwrap_or(today)` con fallback seguro | Panic potencial si fecha inválida |
+| 35 | `app.rs` | `load_and_analyse_table` ahora propaga errores a `self.error` en vez de `unwrap_or_default()` silencioso | SRP: errores de schema visibles al usuario |
+| 36 | `db/constants.rs` | Nuevo campo `fallback_pk_name` en `AnalyseConfig`, constante `DEFAULT_PK_FALLBACK` | Fix A2: rowid hardcodeado ahora configurable vía env |
+| 37 | `config.rs` | Usa `constants::DEFAULT_PENDING_PATTERN` y `DEFAULT_SIGNED_PATTERN`, agrega `FALLBACK_PK_NAME` env var | Fix A1: DRY con constants.rs |
+| 38 | `db/schema.rs` | Nueva función `obtener_pk_con_fallback(conn, tabla, fallback)` | Fix B1: DRY — patrón de detección PK duplicado eliminado |
+| 39 | `db/utils.rs` | Nueva función `strip_fk_prefix(name, prefix)` | Fix B2: DRY — extracción de nombre display duplicada |
+| 40 | `db/analysis.rs` | Usa `obtener_pk_con_fallback` y `strip_fk_prefix`; B3: 5 `clean_identifier` consolidadas en 1 | DRY + SRP |
+| 41 | `db/explorer.rs` | Usa `strip_fk_prefix` en vez de `strip_prefix` manual | DRY: helper reutilizable |
+| 42 | `db/dashboard.rs` | Usa `obtener_pk_con_fallback` en vez de `detectar_pk_columna + unwrap_or("rowid")` | DRY: helper reutilizable |
+| 43 | `db/analysis.rs` | C2: CAST({sc} AS TEXT) repetido en 3 lugares → subquery con alias `v`; UPPER({sc}) sin CAST redundante; `CAST(COUNT(*) AS REAL)` → `1.0 * COUNT(*)` | SQL más limpio y legible |
+| 44 | `db/schema.rs` | `listar_tablas`/`listar_vistas` → `listar_objetos_sqlite(conn, tipo)` unificadas | DRY: código idéntico salvo el string "table"/"view" |
+| 45 | `db/dashboard.rs` | `row.get().unwrap_or_default().unwrap_or_default()` → `.ok().flatten().unwrap_or_default()` | #22: doble unwrap simplificado |
+| 46 | `db/analysis.rs` | `AVG(CAST(LENGTH({sc}) AS REAL))` → `AVG(LENGTH({sc}))` | #15: CAST redundante eliminado |
+| 47 | `db/schema.rs` | `obtener_pk_con_fallback` ahora loggea error con `eprintln` antes de usar fallback | #9: error de PK detection visible en stderr |
+| 48 | `db/analysis.rs` | #3: escape manual `replace(\'\'\\'\\', \"''\")` eliminado — los patrones ya son bound parameters | Doble escape innecesario |
+| 49 | `db/constants.rs` + `ui/widgets.rs` | #8: `DATE_FORMAT`, `DATE_FORMAT_HINT` como constantes, widgets las referencian | Formato fecha configurable |
+| 50 | `db/constants.rs` + `db/analysis.rs` | #12: magic numbers `0.3`, `0.5`, `2.0`, etc. → constantes `STATUS_*` | Thresholds de score configurables |
+| 51 | `app.rs` | #1: `refresh_data` preserva `self.data` previa en vez de sobrescribir con `DashboardData::default()` al fallar | Bug dashboard: error ya no limpia la tabla visible |
+| 52 | `app.rs` | #4: `seleccionar_tabla` loggea error de `detectar_patron_optimizable` con `eprintln` | Error de patrón visible en stderr |
+| 53 | `app.rs` | #8: validación explícita `if let Some(t)` antes de seleccionar tabla | Evita seleccionar string vacío si no hay tablas |
+
+---
+
+## Fixes Plan de Auditoría Qwen (Junio 2026) ✓
+
+Implementación de los 14 hallazgos válidos del plan de auditoría, priorizados por severidad.
+
+### 🔴 Prioridad Alta (DRY)
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 1 | `db/analysis.rs` | Extraída `query_distinct_values()` — función genérica que acepta col_expr, from_expr, where_clause opcional y limit | 4 repeticiones del patrón SELECT DISTINCT + ORDER BY + LIMIT reducidas a 1 |
+| 2 | `db/analysis.rs` | Extraída `query_min_max::<T>()` — función genérica con `FromSql` que retorna `(Option<T>, Option<T>)` | 3 repeticiones de MIN/MAX query reducidas a 1 |
+
+### 🟡 Prioridad Media (SQL + Hardcodeo + DRY)
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 4 | `db/dashboard.rs` | GROUP BY con triple CAST → subquery con alias `group_key` | SQL más limpio, sin CAST redundante |
+| 5 | `db/constants.rs` + `db/dashboard.rs` | Nueva constante `FK_ALIAS_PREFIX = "c_"` usada en JOIN alias | String literal "c_" hardcodeado eliminado |
+| 6 | `app.rs` | `init_filtros` dividida en `init_categorical_filter_data`, `init_categorical_fk_filter_data`, `init_date_filter_data`, `init_numeric_filter_data`, `init_text_search_filter_data` | SRP: función de 35 líneas con 5 responsabilidades separada |
+| 7 | `export.rs` | Creada `fetch_dashboard_data()` helper, usada por `exportar_excel` y `exportar_pdf_with_screenshot` | DRY: llamadas duplicadas a `db::dashboard()` unificadas |
+| 8 | `db/analysis.rs` | Mensajes de error mejorados con nombre de columna en status detection | Errores más informativos para debugging |
+| 9 | `db/constants.rs` + `db/analysis.rs` | Nueva constante `FK_KEY_SEPARATOR = "."` usada en split de keys compuestas | String literal "." hardcodeado eliminado |
+
+### 🟢 Prioridad Baja (Hardcodeo menor + Manejo de errores)
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 11 | `db/constants.rs` + `config.rs` + `ui/redactor_window.rs` | Campo `redactor_placeholders` en `AnalyseConfig`, configurable via env `REDACTOR_PLACEHOLDERS`. Label dinámico en redactor | Placeholders hardcodeados ahora configurables |
+| 12 | `config.rs` + `export.rs` | Nuevos structs `PdfConfig` y `PptxConfig` con campos configurables. PDF/PPTX usan `config.pdf.*` y `config.pptx.*` | Dimensiones y títulos hardcodeados ahora configurables |
+| 13 | `ui/widgets.rs` | Nueva función `safe_date_parse(date_str, fallback)` | 3 `unwrap_or(today)` consolidados en 1 helper |
+| 14 | `db/schema.rs` | Doc comment agregado a `obtener_pk_con_fallback` | Comportamiento de fallback documentado |
+| 15 | `app.rs` | `refresh_data` ahora loggea con `eprintln` el flujo completo (vista, page, filtros, resultado, error) | Debugging del dashboard habilitado |
+| 16 | `ui/tabla.rs` | Al mostrar "Sin datos", verifica `app.error.is_none()` primero | Distingue entre error y datos vacíos |
+
+---
+
+## Fixes Segunda Auditoría Qwen (Junio 2026) ✓
+
+Segundo plan de auditoría con 13 hallazgos implementados.
+
+### 🔴 Prioridad Alta (Performance)
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 1 | `db/dashboard.rs` | Subquery correlacionada en `add_categorical_fk_filter` → LEFT JOIN con alias `c_fltr_*` | Performance: subquery se ejecutaba por fila; JOIN se ejecuta una vez |
+
+### 🟡 Prioridad Media (Mantenibilidad + DRY)
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 2 | `db/analysis.rs` | Nueva función `build_columna_info()` — 8 construcciones de `ColumnaInfo` consolidadas en 1 helper | DRY: match arms repetían estructura idéntica |
+| 3 | `db/types.rs` + `db/analysis.rs` | Nuevo método `ColumnaInfo::to_filtro_info()`. `extraer_filtros_info` simplificado a 3 líneas | DRY: lógica de mapeo columna→filtro duplicada eliminada |
+| 4 | `app.rs` | `init_filtros` consolidada en 1 función con match inline | DRY: 5 funciones helper redundantes eliminadas |
+| 5 | `app.rs` | Error de `detectar_patron_optimizable` ahora se asigna a `self.error` (visible al usuario) | UX: error silencioso ahora visible |
+| 6 | `db/dashboard.rs` | `UPPER({sc}) LIKE ?` → `UPPER(CAST({sc} AS TEXT)) LIKE ?` en `contar_por_estado` | Correctitud: LIKE fallaba en columnas numéricas/fecha |
+| 7 | `config.rs` + `app.rs` | Nuevos campos `default_excel_name`, `default_pdf_name`, `default_pptx_name` configurables por env var | Configurabilidad: nombres de exportación hardcodeados |
+
+### 🟢 Prioridad Baja (Limpieza)
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 8 | `db/dashboard.rs` | `"rowid"` → `constants::DEFAULT_PK_FALLBACK` en ORDER BY fallback | Consistencia con el resto del código |
+| 9 | `app.rs` | metric_card en loop con array `[(label, value, color)]` en vez de 3 llamadas manuales | DRY |
+| 10 | `ui/charts.rs` | Extraída `prepare_chart_data()` para sorting+colores compartido entre bar y pie chart | DRY: lógica de sorting y colores duplicada eliminada |
+| 11 | `export.rs` | `fetch_dashboard_data` extendida con parámetros `status_col` y `modo` | Consistencia con signature de `db::dashboard()` |
+| 12 | `db/analysis.rs` | Comentarios `// split() always returns at least one element` en split de FK keys | Claridad |
+| 13 | `config.rs` | Env var `PDF_TITLE` para configurar título del PDF | Configurabilidad |
+
+### ❌ Descartados del plan original (ambas auditorías)
+
+| # | Razón |
+|---|-------|
+| A3 | `add_*_filter` ya están separadas como 5 funciones independientes en `dashboard.rs:15-62`. No hay duplicación real |
+| A10 | `total_all_sql` (`SELECT COUNT(*) {from_clause}`) ya es eficiente. El fix sugerido no mejora nada |
+
+---
+
+## Tareas Extras E2 + E3 (Junio 2026) ✓
+
+### E2 — Cross-compile Windows desde Linux
+
+**Hallazgo**: Dependencias mayormente Pure Rust, sin problemas de compatibilidad. Único riesgo identificado: `rfd 0.15` (file dialog) usa `windows-sys` y tiene linker issues documentados con target `x86_64-pc-windows-gnu` (MinGW).
+
+**Solución recomendada**:
+- Usar `cargo-xwin` con target `x86_64-pc-windows-msvc` en vez de MinGW
+- `cargo-xwin` descarga automáticamente CRT y Windows SDK de Microsoft
+- `.cargo/config.toml` configurado con linker para GNU y static CRT para MSVC
+
+**Comandos**:
+```bash
+# MSVC (recomendado)
+cargo install cargo-xwin
+cargo xwin build --target x86_64-pc-windows-msvc --release
+
+# MinGW (alternativa)
+rustup target add x86_64-pc-windows-gnu
+sudo apt install gcc-mingw-w64-x86-64-posix
+cargo build --target x86_64-pc-windows-gnu --release
+
+# Docker
+cargo install cross
+cross build --target x86_64-pc-windows-gnu --release
+```
+
+### E3 — Portable ejecutable sin admin
+
+**Hallazgo**: Por defecto Rust MSVC linkea dinámicamente `VCRUNTIME140.dll`, requiriendo VC++ Redistributable instalado en Windows.
+
+**Solución**: Agregado `rustflags = ["-C", "target-feature=+crt-static"]` para `x86_64-pc-windows-msvc` en `.cargo/config.toml`. Esto producce un `.exe` ~100KB más grande pero sin dependencias DLL externas.
+
+**Distribución** (ZIP):
+```
+reporte_contrataciones_4-v1.0.0-windows.zip/
+├── reporte_contrataciones_4.exe
+├── data/
+│   └── Tablas3.db
+└── output/          (opcional, se crea solo)
+```
+
+**Archivo creado**: `.cargo/config.toml` con configuración de target features y linker.
