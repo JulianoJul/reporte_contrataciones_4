@@ -50,3 +50,5 @@ c) VIOLACIONES SQL: CAST innecesario, falta de ORDER BY en paginación, GROUP BY
 d) ERRORES de manejo: unwrap() que pueda panic, errores no propagados con ?.
 
 Para cada hallazgo indica: archivo:línea, regla violada, severidad (Alta/Media/Baja), y sugerencia de fix.
+
+Además, al final del reporte, genera un archivo llamado `plan_modificaciones.md` con la lista completa de hallazgos priorizados por severidad, cada uno con: archivo:línea, descripción del problema, fix sugerido, y estado inicial "pendiente". Este archivo servirá como guía para que opencode implemente los fixes uno por uno.
