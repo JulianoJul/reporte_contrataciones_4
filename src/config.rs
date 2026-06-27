@@ -26,33 +26,39 @@ impl Config {
         let signed_label = std::env::var("SIGNED_LABEL")
             .unwrap_or_else(|_| "Firmados".to_string());
 
-        let catalog_prefix = std::env::var("CATALOG_PREFIX")
-            .unwrap_or_else(|_| "cat_".to_string());
-        let fk_id_prefix = std::env::var("FK_ID_PREFIX")
-            .unwrap_or_else(|_| "id_".to_string());
-        let preferred_str = std::env::var("PREFERRED_NAME_COLS")
-            .unwrap_or_else(|_| "nombre,name,descripcion,desc".to_string());
-        let preferred_name_cols: Vec<String> = preferred_str
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let exclude_id_prefix = std::env::var("EXCLUDE_ID_PREFIX")
-            .unwrap_or_else(|_| "id".to_string());
-        let exclude_names_str = std::env::var("EXCLUDE_NAME_COLS")
-            .unwrap_or_else(|_| "created_at,updated_at".to_string());
-        let exclude_name_cols: Vec<String> = exclude_names_str
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let view_keywords_str = std::env::var("VIEW_KEYWORDS")
-            .unwrap_or_else(|_| "reporte,excel,vw_,vista".to_string());
-        let view_keywords: Vec<String> = view_keywords_str
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let dflt = AnalyseConfig::default();
+        let analyse = AnalyseConfig {
+            catalog_prefix: std::env::var("CATALOG_PREFIX")
+                .unwrap_or_else(|_| dflt.catalog_prefix.clone()),
+            fk_id_prefix: std::env::var("FK_ID_PREFIX")
+                .unwrap_or_else(|_| dflt.fk_id_prefix.clone()),
+            preferred_name_cols: {
+                let s = std::env::var("PREFERRED_NAME_COLS")
+                    .unwrap_or_else(|_| dflt.preferred_name_cols.join(","));
+                s.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            },
+            exclude_id_prefix: std::env::var("EXCLUDE_ID_PREFIX")
+                .unwrap_or_else(|_| dflt.exclude_id_prefix.clone()),
+            exclude_name_cols: {
+                let s = std::env::var("EXCLUDE_NAME_COLS")
+                    .unwrap_or_else(|_| dflt.exclude_name_cols.join(","));
+                s.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            },
+            view_keywords: {
+                let s = std::env::var("VIEW_KEYWORDS")
+                    .unwrap_or_else(|_| dflt.view_keywords.join(","));
+                s.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            },
+        };
 
         Config {
             default_db,
@@ -61,14 +67,7 @@ impl Config {
             pending_label,
             signed_pattern,
             signed_label,
-            analyse: AnalyseConfig {
-                catalog_prefix,
-                fk_id_prefix,
-                preferred_name_cols,
-                exclude_id_prefix,
-                exclude_name_cols,
-                view_keywords,
-            },
+            analyse,
         }
     }
 }

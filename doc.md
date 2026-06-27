@@ -171,7 +171,7 @@ make combine     # concatena todo el código en combined.txt
 2. **Makefile siempre**: después de cambios, ejecutar `make build` y `make combine`.
 3. **Sin hardcodeo**: cero assumptions de naming conventions. Toda heurística debe ser configurable.
 4. **Historial de cambios**: cada cambio debe agregarse a la cronología en `doc.md` con fecha, archivo, y razón.
-5. **Código modular**: cada archivo debe tener una única responsabilidad. Si una función crece más de ~80 líneas o un archivo supera ~400 líneas, extraer a un nuevo módulo/archivo.
+5. **Código modular**: las funciones deben diseñarse con una única responsabilidad y sin redundancia de lógica. Evitar duplicación de patrones, extraer helpers reutilizables cuando un bloque de código aparece en más de un lugar. No hay un límite rígido de líneas por archivo o función; la métrica es cohesión interna y ausencia de repetición.
 
 ---
 
@@ -354,4 +354,7 @@ Se agregó `AnalyseConfig` en `db/constants.rs` con parámetros configurables v�
 | 29 | `ui/sidebar.rs` | Campos de fecha: botón "Hoy" que inserta fecha actual, y calendario popup al clickear el campo | UX de fechas mejorado |
 | 30 | `ui/widgets.rs` | Nueva función `date_picker_widget` para calendario emergente | Reutilizable |
 | 31 | `db/explorer.rs` | CRITERIO 1b: tablas cat_* retornan `Universal` en vez de `VistaConFKs` | Bugfix: cat_* seleccionadas usaban modo VistaConFKs contra expedientes, causando `no such column: tb.id` |
-| 32 | `db/dashboard.rs` | Fix audit: ORDER BY en paginación, GROUP BY consistente con SELECT CAST, CAST redundante eliminado de LIKE/UPPER | Auditaría SQL: Fix #1, #2, #4 — orden determinístico, SQL portable, sin CAST innecesario |
+| 32 | `db/dashboard.rs` | Fix audit: ORDER BY en paginación, GROUP BY consistente con SELECT CAST, CAST redundante eliminado de LIKE/UPPER | Auditoría SQL: Fix #1, #2, #4 — orden determinístico, SQL portable, sin CAST innecesario |
+| 33 | `config.rs` | Centralizados defaults: `AnalyseConfig::default()` como única fuente de verdad, eliminada duplicación de strings | DRY: config.rs ya no repite valores de constants.rs |
+| 34 | `ui/widgets.rs` | `NaiveDate::from_ymd_opt().unwrap()` → `unwrap_or(today)` con fallback seguro | Panic potencial si fecha inválida |
+| 35 | `app.rs` | `load_and_analyse_table` ahora propaga errores a `self.error` en vez de `unwrap_or_default()` silencioso | SRP: errores de schema visibles al usuario |

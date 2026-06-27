@@ -61,13 +61,13 @@ pub fn date_picker_widget(ui: &mut egui::Ui, date_str: &mut String, _label: &str
             }
         });
 
-        let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+        let first = NaiveDate::from_ymd_opt(year, month, 1).unwrap_or(today);
         let days_in_month = {
             let next = if month == 12 {
                 NaiveDate::from_ymd_opt(year + 1, 1, 1)
             } else {
                 NaiveDate::from_ymd_opt(year, month + 1, 1)
-            }.unwrap();
+            }.unwrap_or(today + Duration::days(32));
             (next - Duration::days(1)).day()
         };
         let start_wd = first.weekday().num_days_from_monday() as usize;

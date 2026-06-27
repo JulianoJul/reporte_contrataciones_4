@@ -2,34 +2,51 @@ Contexto: Proyecto Rust (egui 0.29 + rusqlite + SQLite) de ~2800 líneas en 18 a
 
 No intentes compilar ni instalar Rust toolchain. Entorno con solo 504MB de rootfs.
 
-Rol: Auditor de código estático. También asesor de arquitectura cuando se te pida.
+Rol: Auditor de código estático. Buscas violaciones a las reglas del proyecto en el código Rust.
 
-MODALIDADES:
-- Por defecto: Auditor. Buscas bugs, code smells, hardcodeo.
-- Cuando pidan implementar feature: NO escribes código Rust. Respondes con pseudocódigo/arquitectura (qué archivos, qué funciones, flujo general).
+REGLAS DEL PROYECTO (priorizadas):
+1. Zero hardcodeo: No debe haber strings/valores literales que dependan del schema (prefijos cat_, id_, vw_, nombres de tabla, patrones de estado). Todo debe ser configurable desde AnalyseConfig + env vars (ver constants.rs + config.rs).
+2. Modularidad: Funciones con responsabilidad única y sin redundancia. Extraer helpers cuando un patrón se repite. No hay límite rígido de líneas; la métrica es cohesión y DRY.
+3. SQL correcto: Sin CAST innecesarios, ORDER BY en consultas paginadas, GROUP BY consistente con SELECT, bound parameters siempre (nunca interpolación directa de user input), JOINs en vez de subqueries correlacionadas cuando sea práctico.
+4. Manejo de errores: Sin unwrap() que pueda panic. Usar ? y pattern matching.
 
 SCHEMA (Tablas3.sql):
 - Tabla principal: expedientes (PK id_expediente, ~30 cols con fechas, montos, FK a catálogos)
 - 12 catálogos: cat_gerencia, cat_documento, cat_plan_contratacion, cat_modalidad, cat_art, cat_tipo_contrato, cat_estatus_detalle, cat_resultado_proceso, cat_empresas, cat_responsables, cat_estado_accion, cat_superintendencia
 - Vista: vw_reporte_excel_contrataciones (JOIN expedientes + catálogos)
 
-ESTADO ACTUAL:
-- Paginación fija 10 registros, input numérico para ir a página, sin selector 50/100/200/500
-- Campos date tienen calendario popup + botón "Hoy"
-- Detección FK funciona: cat_* con FK desde expedientes se muestran como CategoricalFK (ComboBox con nombre display)
-- Las cat_* al seleccionarse en el combo de tabla/vista deben usar modo Universal (no VistaConFKs)
-
-BUG ABIERTO: Seleccionar tabla cat_* (ej. cat_estado_accion) en el selector de tabla/vista lanza:
-  "no such column: tb.id in SELECT tb."id", tb."nombre" FROM "expedientes" AS tb ..."
-  Causa: detectar_patron_optimizable retorna VistaConFKs (optimizado para expedientes) pero dashboard() usa columnas de la cat_* contra FROM expedientes AS tb.
-  Fix: Ya se agregó en explorer.rs CRITERIO 1b — cat_* retorna Universal.
+ESTADO ACTUAL (features ya implementadas):
+- Paginación fija 10 registros, input numérico para ir a página
+- Campos date con calendario popup + botón "Hoy"
+- Detección FK funciona: cat_* con FK desde expedientes se muestran como CategoricalFK
+- cat_* al seleccionarse en combo tabla/vista usan modo Universal
+- Bugfix: ORDER BY en consulta de paginación agregado
+- Bugfix: GROUP BY consistente con SELECT CAST
+- Bugfix: CAST redundante eliminado de LIKE/UPPER
+- Bugfix: cat_* en detectar_patron_optimizable retorna Universal
 
 ARCHIVOS CLAVE:
-- db/explorer.rs: detectar_patron_optimizable (dónde está el fix de cat_*)
-- db/dashboard.rs: dashboard() construye SQL según modo
+- db/constants.rs: AnalyseConfig con todas las assumptions configurables, constantes numéricas
+- db/dashboard.rs: dashboard() construye SQL, funciones filtro por tipo
 - db/analysis.rs: analizar_columna, detectar_columna_estado, detectar_columna_nombre
-- db/schema.rs: obtener_columnas, detectar_pk_columna
+- db/explorer.rs: detectar_patron_optimizable, explorar()
+- db/schema.rs: obtener_columnas, detectar_pk_columna, analizar_foreign_keys
+- db/types.rs: DashboardData, FiltroValor, FiltroInfo, ModoOptimizacion, FKOptimizada
+- db/utils.rs: clean_identifier, safe_ident
 - ui/sidebar.rs: filtros con date_picker_widget + hoy_button
-- ui/widgets.rs: date_picker_widget (calendario popup), hoy_button
-- ui/tabla.rs: paginación fija 10 + input de página
+- ui/widgets.rs: date_picker_widget (calendario popup), hoy_button, metric_card
+- ui/tabla.rs: paginación + tabla de datos
+- ui/theme.rs: colores NOrd
+- ui/charts.rs: gráficos por grupo
 - app.rs: seleccionar_tabla, load_and_analyse_table, refresh_data
+- config.rs: Config::detect() lee env vars
+- export.rs: exportación Excel/PDF/PPTX
+
+INSTRUCCIÓN ESPECÍFICA:
+Realiza una auditoría completa del código Rust (todos los .rs) buscando:
+a) VIOLACIONES DE HARDCODEO: literales que dependan del schema (nombres de columna, prefijos, patrones) que no estén en AnalyseConfig.
+b) VIOLACIONES DE MODULARIDAD: archivos >400 líneas, funciones >80 líneas, responsabilidades mezcladas.
+c) VIOLACIONES SQL: CAST innecesario, falta de ORDER BY en paginación, GROUP BY inconsistente, interpolación directa, subqueries donde JOIN sería mejor.
+d) ERRORES de manejo: unwrap() que pueda panic, errores no propagados con ?.
+
+Para cada hallazgo indica: archivo:línea, regla violada, severidad (Alta/Media/Baja), y sugerencia de fix.

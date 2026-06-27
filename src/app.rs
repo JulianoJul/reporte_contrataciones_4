@@ -105,9 +105,18 @@ impl App {
             Some(c) => c,
             None => return,
         };
-        let cols_raw = db::schema::obtener_columnas(conn, tabla).unwrap_or_default();
-        let all_tablas = db::schema::listar_tablas(conn).unwrap_or_default();
-        let fk_pairs = db::schema::analizar_foreign_keys(conn, &all_tablas).unwrap_or_default();
+        let cols_raw = match db::schema::obtener_columnas(conn, tabla) {
+            Ok(c) => c,
+            Err(e) => { self.error = Some(format!("Error leyendo columnas de {}: {}", tabla, e)); return; }
+        };
+        let all_tablas = match db::schema::listar_tablas(conn) {
+            Ok(t) => t,
+            Err(e) => { self.error = Some(format!("Error listando tablas: {}", e)); return; }
+        };
+        let fk_pairs = match db::schema::analizar_foreign_keys(conn, &all_tablas) {
+            Ok(f) => f,
+            Err(e) => { self.error = Some(format!("Error analizando FKs: {}", e)); return; }
+        };
         let mut columnas = Vec::new();
         for col in &cols_raw {
             if col.pk { continue; }
