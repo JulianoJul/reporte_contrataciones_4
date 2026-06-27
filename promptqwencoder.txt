@@ -45,7 +45,7 @@ ARCHIVOS CLAVE:
 INSTRUCCIÓN ESPECÍFICA:
 Realiza una auditoría completa del código Rust (todos los .rs) buscando:
 a) VIOLACIONES DE HARDCODEO: literales que dependan del schema (nombres de columna, prefijos, patrones) que no estén en AnalyseConfig.
-b) VIOLACIONES DE MODULARIDAD: archivos >400 líneas, funciones >80 líneas, responsabilidades mezcladas.
+b) VIOLACIONES DE DRY/REUTILIZACIÓN: lógica duplicada (bloques copiados en >1 lugar), patrones que deberían ser funciones reutilizables, responsabilidades mezcladas en una misma función. No importa el tamaño en líneas.
 c) VIOLACIONES SQL: CAST innecesario, falta de ORDER BY en paginación, GROUP BY inconsistente, interpolación directa, subqueries donde JOIN sería mejor.
 d) ERRORES de manejo: unwrap() que pueda panic, errores no propagados con ?.
 
