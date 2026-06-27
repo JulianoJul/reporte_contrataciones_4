@@ -25,9 +25,11 @@ fn fetch_dashboard_data(
     vista: &str,
     limit: usize,
     config: &Config,
+    status_col: Option<&str>,
+    modo: Option<&db::ModoOptimizacion>,
 ) -> Result<db::DashboardData, String> {
     db::dashboard(
-        conn, filtros, vista, None, 1, limit, None, None,
+        conn, filtros, vista, None, 1, limit, status_col, modo,
         Some(&config.pending_pattern), Some(&config.signed_pattern)
     ).map_err(|e| e.to_string())
 }
@@ -39,7 +41,7 @@ pub fn exportar_excel(
     vista: &str,
     config: &Config,
 ) -> Result<String, String> {
-    let data = fetch_dashboard_data(conn, filtros, vista, db::constants::TABLE_LIMIT, config)?;
+    let data = fetch_dashboard_data(conn, filtros, vista, db::constants::TABLE_LIMIT, config, None, None)?;
 
     if let Some(parent) = output_path.parent() {
         ensure_dir(parent)?;
@@ -95,7 +97,7 @@ pub fn exportar_pdf_with_screenshot(
 ) -> Result<String, String> {
     use printpdf::{BuiltinFont, Image, ImageTransform, Mm, PdfDocument};
 
-    let data = fetch_dashboard_data(conn, filtros, vista, db::constants::PDF_ROW_LIMIT, config)?;
+    let data = fetch_dashboard_data(conn, filtros, vista, db::constants::PDF_ROW_LIMIT, config, None, None)?;
 
     if let Some(parent) = output_path.parent() {
         ensure_dir(parent)?;

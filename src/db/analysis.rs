@@ -32,6 +32,23 @@ fn query_distinct_values(
     Ok(values)
 }
 
+fn build_columna_info(
+    nombre: String, tipo: &str,
+    valores: Option<Vec<serde_json::Value>>,
+    total_distintos: Option<u64>,
+    min: Option<f64>, max: Option<f64>,
+    fecha_min: Option<String>, fecha_max: Option<String>,
+    col_original: Option<String>,
+    tabla_catalogo: Option<String>,
+    col_nombre_catalogo: Option<String>,
+) -> ColumnaInfo {
+    ColumnaInfo {
+        nombre, tipo: tipo.to_string(), valores, total_distintos,
+        min, max, fecha_min, fecha_max,
+        col_original, tabla_catalogo, col_nombre_catalogo,
+    }
+}
+
 fn query_min_max<T: rusqlite::types::FromSql>(
     conn: &Connection,
     tabla: &str,
@@ -68,16 +85,13 @@ pub fn analizar_columna(
             )?;
             let total_dist = valores.len() as u64;
             let nombre_display = strip_fk_prefix(&col.name, &ac.fk_id_prefix);
-            return Ok(Some(ColumnaInfo {
-                nombre: nombre_display,
-                tipo: "categorical_fk".to_string(),
-                valores: Some(valores),
-                total_distintos: Some(total_dist),
-                min: None, max: None, fecha_min: None, fecha_max: None,
-                col_original: Some(col.name.clone()),
-                tabla_catalogo: Some(fk_info.tabla.clone()),
-                col_nombre_catalogo: Some(col_nombre),
-            }));
+            return Ok(Some(build_columna_info(
+                nombre_display, "categorical_fk",
+                Some(valores), Some(total_dist),
+                None, None, None, None,
+                Some(col.name.clone()),
+                Some(fk_info.tabla.clone()), Some(col_nombre),
+            )));
         }
     }
 
@@ -86,19 +100,11 @@ pub fn analizar_columna(
     match col.col_type.as_str() {
         "DATE" | "DATETIME" | "TIMESTAMP" => {
             let (min_v, max_v) = query_min_max::<String>(conn, tabla, &col.name)?;
-            Ok(Some(ColumnaInfo {
-                nombre: col.name.clone(),
-                tipo: "date".to_string(),
-                fecha_min: min_v,
-                fecha_max: max_v,
-                valores: None,
-                total_distintos: None,
-                min: None,
-                max: None,
-                col_original: None,
-                tabla_catalogo: None,
-                col_nombre_catalogo: None,
-            }))
+            Ok(Some(build_columna_info(
+                col.name.clone(), "date",
+                None, None, None, None, min_v, max_v,
+                None, None, None,
+            )))
         }
 
         "REAL" | "FLOAT" | "DOUBLE" | "NUMERIC" | "DECIMAL" => {
@@ -116,34 +122,19 @@ pub fn analizar_columna(
                     None,
                     constants::MAX_CATEGORICAL_VALUES * 2,
                 )?;
-                return Ok(Some(ColumnaInfo {
-                    nombre: col.name.clone(),
-                    tipo: "categorical".to_string(),
-                    valores: Some(values),
-                    total_distintos: Some(distinct as u64),
-                    min: None,
-                    max: None,
-                    fecha_min: None,
-                fecha_max: None,
-                col_original: None,
-                tabla_catalogo: None,
-                col_nombre_catalogo: None,
-            }));
+                return Ok(Some(build_columna_info(
+                    col.name.clone(), "categorical",
+                    Some(values), Some(distinct as u64),
+                    None, None, None, None,
+                    None, None, None,
+                )));
             }
 
-            Ok(Some(ColumnaInfo {
-                nombre: col.name.clone(),
-                tipo: "numeric".to_string(),
-                min: min_v,
-                max: max_v,
-                valores: None,
-                total_distintos: None,
-                fecha_min: None,
-                fecha_max: None,
-                col_original: None,
-                tabla_catalogo: None,
-                col_nombre_catalogo: None,
-            }))
+            Ok(Some(build_columna_info(
+                col.name.clone(), "numeric",
+                None, None, min_v, max_v, None, None,
+                None, None, None,
+            )))
         }
 
         "INTEGER" | "BIGINT" | "SMALLINT" | "TINYINT" => {
@@ -164,35 +155,20 @@ pub fn analizar_columna(
                     None,
                     constants::MAX_CATEGORICAL_VALUES * 2,
                 )?;
-                return Ok(Some(ColumnaInfo {
-                    nombre: col.name.clone(),
-                    tipo: "categorical".to_string(),
-                    valores: Some(values),
-                    total_distintos: Some(distinct as u64),
-                    min: None,
-                    max: None,
-                    fecha_min: None,
-                fecha_max: None,
-                col_original: None,
-                tabla_catalogo: None,
-                col_nombre_catalogo: None,
-            }));
+                return Ok(Some(build_columna_info(
+                    col.name.clone(), "categorical",
+                    Some(values), Some(distinct as u64),
+                    None, None, None, None,
+                    None, None, None,
+                )));
             }
 
             let (min_v, max_v) = query_min_max::<i64>(conn, tabla, &col.name)?;
-            return Ok(Some(ColumnaInfo {
-                nombre: col.name.clone(),
-                tipo: "numeric".to_string(),
-                min: min_v.map(|v| v as f64),
-                max: max_v.map(|v| v as f64),
-                valores: None,
-                total_distintos: None,
-                fecha_min: None,
-                fecha_max: None,
-                col_original: None,
-                tabla_catalogo: None,
-                col_nombre_catalogo: None,
-            }));
+            return Ok(Some(build_columna_info(
+                col.name.clone(), "numeric",
+                None, None, min_v.map(|v| v as f64), max_v.map(|v| v as f64), None, None,
+                None, None, None,
+            )));
         }
 
         _ => {
@@ -220,33 +196,18 @@ pub fn analizar_columna(
                     Some(&format!("{} IS NOT NULL AND {} != ''", sc, sc)),
                     constants::MAX_CATEGORICAL_VALUES * 2,
                 )?;
-                Ok(Some(ColumnaInfo {
-                    nombre: col.name.clone(),
-                    tipo: "categorical".to_string(),
-                    valores: Some(values),
-                    total_distintos: Some(distinct as u64),
-                    min: None,
-                    max: None,
-                    fecha_min: None,
-                    fecha_max: None,
-                    col_original: None,
-                    tabla_catalogo: None,
-                    col_nombre_catalogo: None,
-                }))
+                Ok(Some(build_columna_info(
+                    col.name.clone(), "categorical",
+                    Some(values), Some(distinct as u64),
+                    None, None, None, None,
+                    None, None, None,
+                )))
             } else {
-                Ok(Some(ColumnaInfo {
-                    nombre: col.name.clone(),
-                    tipo: "text_search".to_string(),
-                    valores: None,
-                    total_distintos: None,
-                    min: None,
-                    max: None,
-                    fecha_min: None,
-                    fecha_max: None,
-                    col_original: None,
-                    tabla_catalogo: None,
-                    col_nombre_catalogo: None,
-                }))
+                Ok(Some(build_columna_info(
+                    col.name.clone(), "text_search",
+                    None, None, None, None, None, None,
+                    None, None, None,
+                )))
             }
         }
     }
@@ -426,9 +387,11 @@ fn construir_mapeo_dependencia(
     }
 
     for (pk_key, fk_info_pk) in &padre_keys {
+        // split() always returns at least one element, unwrap_or("") is safety net
         let pt = pk_key.split(constants::FK_KEY_SEPARATOR).next().unwrap_or("");
 
         for (fk_key, fk_info_fk) in &hijo_keys {
+            // split() always returns at least one element, unwrap_or("") is safety net
             let ht = fk_key.split(constants::FK_KEY_SEPARATOR).next().unwrap_or("");
 
             if fk_info_fk.tabla != fk_info_pk.tabla {
@@ -486,50 +449,9 @@ fn construir_mapeo_dependencia(
 }
 
 pub fn extraer_filtros_info(meta: &super::types::SchemaMetadata) -> Vec<super::types::FiltroInfo> {
-    let mut filtros = Vec::new();
-    for col in &meta.columnas {
-        let (tipo, valores, min, max, fecha_min, fecha_max, col_original, tabla_cat, col_nombre_cat) = match col.tipo.as_str() {
-            "categorical" => {
-                let vals = col.valores.as_ref().map(|v| {
-                    v.iter()
-                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                        .collect()
-                });
-                ("categorical".to_string(), vals, None, None, None, None, None, None, None)
-            }
-            "categorical_fk" => {
-                let vals = col.valores.as_ref().map(|v| {
-                    v.iter()
-                        .filter_map(|x| x.as_str().map(|s| s.to_string()))
-                        .collect()
-                });
-                ("categorical_fk".to_string(), vals, None, None, None, None,
-                 col.col_original.clone(), col.tabla_catalogo.clone(), col.col_nombre_catalogo.clone())
-            }
-            "date" => {
-                ("date".to_string(), None, None, None, col.fecha_min.clone(), col.fecha_max.clone(), None, None, None)
-            }
-            "numeric" => {
-                ("numeric".to_string(), None, col.min, col.max, None, None, None, None, None)
-            }
-            "text_search" => {
-                ("text_search".to_string(), None, None, None, None, None, None, None, None)
-            }
-            _ => continue,
-        };
-        filtros.push(super::types::FiltroInfo {
-            nombre: col.nombre.clone(),
-            tipo,
-            valores,
-            min,
-            max,
-            fecha_min,
-            fecha_max,
-            col_original,
-            tabla_catalogo: tabla_cat,
-            col_nombre_catalogo: col_nombre_cat,
-        });
-    }
+    let mut filtros: Vec<super::types::FiltroInfo> = meta.columnas.iter()
+        .map(|c| c.to_filtro_info())
+        .collect();
     filtros.sort_by(|a, b| a.nombre.cmp(&b.nombre));
     filtros
 }

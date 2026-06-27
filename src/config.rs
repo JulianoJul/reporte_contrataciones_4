@@ -46,6 +46,9 @@ pub struct Config {
     pub analyse: AnalyseConfig,
     pub pdf: PdfConfig,
     pub pptx: PptxConfig,
+    pub default_excel_name: String,
+    pub default_pdf_name: String,
+    pub default_pptx_name: String,
 }
 
 impl Config {
@@ -107,6 +110,8 @@ impl Config {
             },
         };
 
+        let pdf_title = std::env::var("PDF_TITLE").unwrap_or_else(|_| "Dashboard de Contrataciones".to_string());
+
         Config {
             default_db,
             output_dir,
@@ -115,8 +120,11 @@ impl Config {
             signed_pattern,
             signed_label,
             analyse,
-            pdf: PdfConfig::default(),
+            pdf: PdfConfig { title: pdf_title, ..PdfConfig::default() },
             pptx: PptxConfig::default(),
+            default_excel_name: std::env::var("DEFAULT_EXCEL_NAME").unwrap_or_else(|_| "reporte.xlsx".to_string()),
+            default_pdf_name: std::env::var("DEFAULT_PDF_NAME").unwrap_or_else(|_| "dashboard.pdf".to_string()),
+            default_pptx_name: std::env::var("DEFAULT_PPTX_NAME").unwrap_or_else(|_| "dashboard.pptx".to_string()),
         }
     }
 }

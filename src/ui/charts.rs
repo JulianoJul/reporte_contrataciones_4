@@ -4,6 +4,15 @@ use eframe::egui::{self, Color32, Stroke, Shape};
 use crate::ui::theme::{C_MUTED, C_TEXT, C_BG, C_GREY, nord_colors};
 
 
+fn prepare_chart_data(data: &HashMap<String, u64>) -> (Vec<(String, u64)>, Vec<Color32>) {
+    let mut sorted: Vec<(String, u64)> = data.iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
+    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    let colors = nord_colors();
+    (sorted, colors)
+}
+
 pub fn bar_chart_view(ui: &mut egui::Ui, data: &HashMap<String, u64>, _title: &str) {
     use egui_plot::{Bar, BarChart, Plot};
 
@@ -12,16 +21,14 @@ pub fn bar_chart_view(ui: &mut egui::Ui, data: &HashMap<String, u64>, _title: &s
         return;
     }
 
-    let mut sorted: Vec<(&String, &u64)> = data.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(a.1));
-    let colors = nord_colors();
+    let (sorted, colors) = prepare_chart_data(data);
 
     let bars: Vec<Bar> = sorted
         .iter()
         .enumerate()
         .map(|(i, (label, count))| {
             let display = label.replace('_', " ");
-            Bar::new(i as f64, **count as f64)
+            Bar::new(i as f64, *count as f64)
                 .name(format!("{}: {}", display, count))
                 .width(0.7)
                 .fill(colors[i % colors.len()])
@@ -44,9 +51,7 @@ pub fn pie_chart_view(ui: &mut egui::Ui, data: &HashMap<String, u64>, _title: &s
         return;
     }
 
-    let mut sorted: Vec<(&String, &u64)> = data.iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(a.1));
-    let colors = nord_colors();
+    let (sorted, colors) = prepare_chart_data(data);
 
     let size = egui::vec2(ui.available_width().min(300.0), 200.0);
     let (rect, _response) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -62,7 +67,7 @@ pub fn pie_chart_view(ui: &mut egui::Ui, data: &HashMap<String, u64>, _title: &s
     let mut start_angle = -std::f32::consts::FRAC_PI_2;
 
     for (i, (_label, count)) in sorted.iter().enumerate() {
-        let fraction = **count as f32 / total as f32;
+        let fraction = *count as f32 / total as f32;
         let sweep = fraction * 2.0 * std::f32::consts::PI;
         let color = colors[i % colors.len()];
 
@@ -127,10 +132,11 @@ pub fn pie_chart_view(ui: &mut egui::Ui, data: &HashMap<String, u64>, _title: &s
         ly += text_h;
     }
     if truncated {
+        let remaining = sorted.len() - ((ly - legend_rect.top() - 4.0) as usize / text_h as usize);
         painter.text(
             egui::pos2(legend_rect.left() + 2.0, ly + 2.0),
             egui::Align2::LEFT_TOP,
-            format!("... y {} mas", sorted.len() - (ly - legend_rect.top() - 4.0) as usize / text_h as usize),
+            format!("... y {} mas", remaining),
             egui::FontId::proportional(9.0),
             C_GREY,
         );

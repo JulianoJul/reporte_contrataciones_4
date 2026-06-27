@@ -23,15 +23,20 @@ fn add_categorical_fk_filter(
     p: &str, col_original: &str, tabla_catalogo: &str, col_nombre: &str,
     selected: &str, conn: Option<&Connection>, pk_cache: &mut HashMap<String, String>,
     clauses: &mut Vec<String>, params: &mut Vec<Box<dyn ToSql>>,
+    fk_joins: &mut Vec<String>,
 ) {
     if !selected.is_empty() && selected != constants::FILTRO_TODOS {
         let tc = safe_ident(tabla_catalogo);
         let cn = safe_ident(col_nombre);
-        let co = format!("{}{}", p, safe_ident(col_original));
         let pk_col = pk_cache.entry(tabla_catalogo.to_string()).or_insert_with(|| {
             conn.map(|c| obtener_pk_con_fallback(c, tabla_catalogo, constants::DEFAULT_PK_FALLBACK)).unwrap_or_else(|| constants::DEFAULT_PK_FALLBACK.to_string())
         });
-        clauses.push(format!("{co} = (SELECT {pk_col} FROM {tc} WHERE {cn} = ?)"));
+        let fk_alias = format!("{}fltr_{}", constants::FK_ALIAS_PREFIX, safe_ident(col_original));
+        fk_joins.push(format!(
+            "LEFT JOIN {} AS {} ON {}{} = {}.{}",
+            tc, fk_alias, p, safe_ident(col_original), fk_alias, safe_ident(pk_col),
+        ));
+        clauses.push(format!("{}.{} = ?", fk_alias, cn));
         params.push(Box::new(selected.to_string()));
     }
 }
@@ -65,11 +70,12 @@ fn construir_where(
     filtros: &HashMap<String, FiltroValor>,
     modo: Option<&ModoOptimizacion>,
     conn: Option<&Connection>,
-) -> (String, Vec<Box<dyn ToSql>>) {
+) -> (String, Vec<Box<dyn ToSql>>, Vec<String>) {
     let p = col_prefix(modo);
     let mut pk_cache: HashMap<String, String> = HashMap::new();
     let mut where_clauses: Vec<String> = Vec::new();
     let mut params: Vec<Box<dyn ToSql>> = Vec::new();
+    let mut fk_joins: Vec<String> = Vec::new();
 
     for (col_name, filtro) in filtros {
         let sc = format!("{}{}", p, safe_ident(col_name));
@@ -77,7 +83,7 @@ fn construir_where(
             FiltroValor::Categorical { selected } =>
                 add_categorical_filter(&sc, selected, &mut where_clauses, &mut params),
             FiltroValor::CategoricalFK { selected, col_original, tabla_catalogo, col_nombre } =>
-                add_categorical_fk_filter(&p, col_original, tabla_catalogo, col_nombre, selected, conn, &mut pk_cache, &mut where_clauses, &mut params),
+                add_categorical_fk_filter(&p, col_original, tabla_catalogo, col_nombre, selected, conn, &mut pk_cache, &mut where_clauses, &mut params, &mut fk_joins),
             FiltroValor::Date { desde, hasta } =>
                 add_date_filter(&sc, desde, hasta, &mut where_clauses, &mut params),
             FiltroValor::Numeric { min, max, .. } =>
@@ -88,9 +94,9 @@ fn construir_where(
     }
 
     if where_clauses.is_empty() {
-        (String::new(), params)
+        (String::new(), params, fk_joins)
     } else {
-        (format!("WHERE {}", where_clauses.join(" AND ")), params)
+        (format!("WHERE {}", where_clauses.join(" AND ")), params, fk_joins)
     }
 }
 
@@ -113,7 +119,7 @@ pub fn dashboard(
     let st = safe_ident(vista);
     let cols = obtener_columnas(conn, vista)?;
     let col_names: Vec<String> = cols.iter().map(|c| c.name.clone()).collect();
-    let (where_sql, params) = construir_where(filtros, modo, Some(conn));
+    let (where_sql, params, fk_joins) = construir_where(filtros, modo, Some(conn));
     let params_refs: Vec<&dyn ToSql> = params.iter().map(|p| p.as_ref()).collect();
 
     let from_clause = match modo {
@@ -131,13 +137,20 @@ pub fn dashboard(
                     safe_ident(&alias), safe_ident(&fk.pk_col),
                 ));
             }
+            joins.extend(fk_joins);
             if joins.is_empty() {
                 format!("FROM {tb} AS tb")
             } else {
                 format!("FROM {tb} AS tb {}", joins.join(" "))
             }
         }
-        _ => format!("FROM {st}"),
+        _ => {
+            if fk_joins.is_empty() {
+                format!("FROM {st}")
+            } else {
+                format!("FROM {} AS tb {}", st, fk_joins.join(" "))
+            }
+        }
     };
 
     let count_sql = format!("SELECT COUNT(*) {from_clause} {where_sql}");
@@ -196,7 +209,7 @@ pub fn dashboard(
     let p_order = col_prefix(modo);
     let order_col = col_names.first()
         .map(|c| format!("{}{}", p_order, safe_ident(c)))
-        .unwrap_or_else(|| "rowid".to_string());
+        .unwrap_or_else(|| constants::DEFAULT_PK_FALLBACK.to_string());
     let table_sql = format!(
         "SELECT {} {from_clause} {where_sql} ORDER BY {} LIMIT {} OFFSET {}",
         select_cols.join(", "),
@@ -251,7 +264,7 @@ fn contar_por_estado(
     let escaped_pattern = format!("%{}%", pattern.to_uppercase());
     let cond = if where_sql.is_empty() { "WHERE".to_string() } else { format!("{} AND", where_sql) };
     let sql = format!(
-        "SELECT COUNT(*) {from_clause} {cond} UPPER({sc}) LIKE ?"
+        "SELECT COUNT(*) {from_clause} {cond} UPPER(CAST({sc} AS TEXT)) LIKE ?"
     );
 
     let mut local_params: Vec<&dyn ToSql> = params.to_vec();

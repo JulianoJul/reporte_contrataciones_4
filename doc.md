@@ -412,9 +412,89 @@ Implementación de los 14 hallazgos válidos del plan de auditoría, priorizados
 | 15 | `app.rs` | `refresh_data` ahora loggea con `eprintln` el flujo completo (vista, page, filtros, resultado, error) | Debugging del dashboard habilitado |
 | 16 | `ui/tabla.rs` | Al mostrar "Sin datos", verifica `app.error.is_none()` primero | Distingue entre error y datos vacíos |
 
-### ❌ Descartados del plan original
+---
+
+## Fixes Segunda Auditoría Qwen (Junio 2026) ✓
+
+Segundo plan de auditoría con 13 hallazgos implementados.
+
+### 🔴 Prioridad Alta (Performance)
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 1 | `db/dashboard.rs` | Subquery correlacionada en `add_categorical_fk_filter` → LEFT JOIN con alias `c_fltr_*` | Performance: subquery se ejecutaba por fila; JOIN se ejecuta una vez |
+
+### 🟡 Prioridad Media (Mantenibilidad + DRY)
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 2 | `db/analysis.rs` | Nueva función `build_columna_info()` — 8 construcciones de `ColumnaInfo` consolidadas en 1 helper | DRY: match arms repetían estructura idéntica |
+| 3 | `db/types.rs` + `db/analysis.rs` | Nuevo método `ColumnaInfo::to_filtro_info()`. `extraer_filtros_info` simplificado a 3 líneas | DRY: lógica de mapeo columna→filtro duplicada eliminada |
+| 4 | `app.rs` | `init_filtros` consolidada en 1 función con match inline | DRY: 5 funciones helper redundantes eliminadas |
+| 5 | `app.rs` | Error de `detectar_patron_optimizable` ahora se asigna a `self.error` (visible al usuario) | UX: error silencioso ahora visible |
+| 6 | `db/dashboard.rs` | `UPPER({sc}) LIKE ?` → `UPPER(CAST({sc} AS TEXT)) LIKE ?` en `contar_por_estado` | Correctitud: LIKE fallaba en columnas numéricas/fecha |
+| 7 | `config.rs` + `app.rs` | Nuevos campos `default_excel_name`, `default_pdf_name`, `default_pptx_name` configurables por env var | Configurabilidad: nombres de exportación hardcodeados |
+
+### 🟢 Prioridad Baja (Limpieza)
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| 8 | `db/dashboard.rs` | `"rowid"` → `constants::DEFAULT_PK_FALLBACK` en ORDER BY fallback | Consistencia con el resto del código |
+| 9 | `app.rs` | metric_card en loop con array `[(label, value, color)]` en vez de 3 llamadas manuales | DRY |
+| 10 | `ui/charts.rs` | Extraída `prepare_chart_data()` para sorting+colores compartido entre bar y pie chart | DRY: lógica de sorting y colores duplicada eliminada |
+| 11 | `export.rs` | `fetch_dashboard_data` extendida con parámetros `status_col` y `modo` | Consistencia con signature de `db::dashboard()` |
+| 12 | `db/analysis.rs` | Comentarios `// split() always returns at least one element` en split de FK keys | Claridad |
+| 13 | `config.rs` | Env var `PDF_TITLE` para configurar título del PDF | Configurabilidad |
+
+### ❌ Descartados del plan original (ambas auditorías)
 
 | # | Razón |
 |---|-------|
-| 3 | `add_*_filter` ya están separadas como 5 funciones independientes en `dashboard.rs:15-62`. No hay duplicación real |
-| 10 | `total_all_sql` (`SELECT COUNT(*) {from_clause}`) ya es eficiente. El fix sugerido no mejora nada |
+| A3 | `add_*_filter` ya están separadas como 5 funciones independientes en `dashboard.rs:15-62`. No hay duplicación real |
+| A10 | `total_all_sql` (`SELECT COUNT(*) {from_clause}`) ya es eficiente. El fix sugerido no mejora nada |
+
+---
+
+## Tareas Extras E2 + E3 (Junio 2026) ✓
+
+### E2 — Cross-compile Windows desde Linux
+
+**Hallazgo**: Dependencias mayormente Pure Rust, sin problemas de compatibilidad. Único riesgo identificado: `rfd 0.15` (file dialog) usa `windows-sys` y tiene linker issues documentados con target `x86_64-pc-windows-gnu` (MinGW).
+
+**Solución recomendada**:
+- Usar `cargo-xwin` con target `x86_64-pc-windows-msvc` en vez de MinGW
+- `cargo-xwin` descarga automáticamente CRT y Windows SDK de Microsoft
+- `.cargo/config.toml` configurado con linker para GNU y static CRT para MSVC
+
+**Comandos**:
+```bash
+# MSVC (recomendado)
+cargo install cargo-xwin
+cargo xwin build --target x86_64-pc-windows-msvc --release
+
+# MinGW (alternativa)
+rustup target add x86_64-pc-windows-gnu
+sudo apt install gcc-mingw-w64-x86-64-posix
+cargo build --target x86_64-pc-windows-gnu --release
+
+# Docker
+cargo install cross
+cross build --target x86_64-pc-windows-gnu --release
+```
+
+### E3 — Portable ejecutable sin admin
+
+**Hallazgo**: Por defecto Rust MSVC linkea dinámicamente `VCRUNTIME140.dll`, requiriendo VC++ Redistributable instalado en Windows.
+
+**Solución**: Agregado `rustflags = ["-C", "target-feature=+crt-static"]` para `x86_64-pc-windows-msvc` en `.cargo/config.toml`. Esto producce un `.exe` ~100KB más grande pero sin dependencias DLL externas.
+
+**Distribución** (ZIP):
+```
+reporte_contrataciones_4-v1.0.0-windows.zip/
+├── reporte_contrataciones_4.exe
+├── data/
+│   └── Tablas3.db
+└── output/          (opcional, se crea solo)
+```
+
+**Archivo creado**: `.cargo/config.toml` con configuración de target features y linker.

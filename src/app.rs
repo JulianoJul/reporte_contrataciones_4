@@ -147,63 +147,42 @@ impl App {
             None => return,
         };
         self.vista = tabla.clone();
-        self.modo = db::detectar_patron_optimizable(conn, &tabla, &self.config.analyse)
-            .unwrap_or_else(|e| { eprintln!("[app] Error detectando patrón para {}: {}", tabla, e); ModoOptimizacion::Universal });
+        self.modo = match db::detectar_patron_optimizable(conn, &tabla, &self.config.analyse) {
+            Ok(m) => m,
+            Err(e) => {
+                let msg = format!("Error detectando patrón para {}: {}", tabla, e);
+                eprintln!("[app] {}", msg);
+                self.error = Some(msg);
+                ModoOptimizacion::Universal
+            }
+        };
         self.load_and_analyse_table(&tabla);
         self.init_filtros();
         self.needs_refresh = true;
-    }
-
-    fn init_categorical_filter_data(&mut self, nombre: &str) {
-        self.filtros.insert(nombre.to_string(),
-            FiltroValor::Categorical { selected: constants::FILTRO_TODOS.to_string() });
-    }
-
-    fn init_categorical_fk_filter_data(&mut self, nombre: &str, col_original: &str, tabla_catalogo: &str, col_nombre: &str) {
-        self.filtros.insert(nombre.to_string(),
-            FiltroValor::CategoricalFK {
-                selected: constants::FILTRO_TODOS.to_string(),
-                col_original: col_original.to_string(),
-                tabla_catalogo: tabla_catalogo.to_string(),
-                col_nombre: col_nombre.to_string(),
-            });
-    }
-
-    fn init_date_filter_data(&mut self, nombre: &str) {
-        self.filtros.insert(nombre.to_string(),
-            FiltroValor::Date { desde: String::new(), hasta: String::new() });
-    }
-
-    fn init_numeric_filter_data(&mut self, nombre: &str, min: f64, max: f64) {
-        self.filtros.insert(nombre.to_string(),
-            FiltroValor::Numeric {
-                min, max,
-                orig_min: min, orig_max: max,
-            });
-    }
-
-    fn init_text_search_filter_data(&mut self, nombre: &str) {
-        self.filtros.insert(nombre.to_string(),
-            FiltroValor::TextSearch { query: String::new() });
     }
 
     fn init_filtros(&mut self) {
         self.filtros.clear();
         let filtros = self.filtros_info.clone();
         for fi in &filtros {
-            match fi.tipo.as_str() {
-                "categorical" => self.init_categorical_filter_data(&fi.nombre),
-                "categorical_fk" => self.init_categorical_fk_filter_data(
-                    &fi.nombre,
-                    fi.col_original.as_deref().unwrap_or(""),
-                    fi.tabla_catalogo.as_deref().unwrap_or(""),
-                    fi.col_nombre_catalogo.as_deref().unwrap_or(""),
-                ),
-                "date" => self.init_date_filter_data(&fi.nombre),
-                "numeric" => self.init_numeric_filter_data(&fi.nombre, fi.min.unwrap_or(0.0), fi.max.unwrap_or(1.0)),
-                "text_search" => self.init_text_search_filter_data(&fi.nombre),
-                _ => {}
-            }
+            let valor = match fi.tipo.as_str() {
+                "categorical" => FiltroValor::Categorical { selected: constants::FILTRO_TODOS.to_string() },
+                "categorical_fk" => FiltroValor::CategoricalFK {
+                    selected: constants::FILTRO_TODOS.to_string(),
+                    col_original: fi.col_original.clone().unwrap_or_default(),
+                    tabla_catalogo: fi.tabla_catalogo.clone().unwrap_or_default(),
+                    col_nombre: fi.col_nombre_catalogo.clone().unwrap_or_default(),
+                },
+                "date" => FiltroValor::Date { desde: String::new(), hasta: String::new() },
+                "numeric" => {
+                    let min = fi.min.unwrap_or(0.0);
+                    let max = fi.max.unwrap_or(1.0);
+                    FiltroValor::Numeric { min, max, orig_min: min, orig_max: max }
+                }
+                "text_search" => FiltroValor::TextSearch { query: String::new() },
+                _ => continue,
+            };
+            self.filtros.insert(fi.nombre.clone(), valor);
         }
     }
 
@@ -279,7 +258,7 @@ impl App {
                             }
                             if ui.button("Excel").on_hover_text("Exportar a Excel").clicked() {
                                 if let Some(ref conn) = self.conn {
-                                    let p = self.config.output_dir.join("reporte.xlsx");
+                                    let p = self.config.output_dir.join(&self.config.default_excel_name);
                                     match crate::export::exportar_excel(conn, &self.filtros, &p, &self.vista, &self.config) {
                                         Ok(p) => { let _ = open::that(p); }
                                         Err(e) => self.error = Some(e),
@@ -399,10 +378,15 @@ impl App {
                 }
 
                 // Metric cards
-                ui.columns(3, |cols| {
-                    crate::ui::widgets::metric_card(&mut cols[0], &self.config.pending_label, self.data.total_pendientes, C_RED);
-                    crate::ui::widgets::metric_card(&mut cols[1], &self.config.signed_label, self.data.total_firmados, C_GREEN);
-                    crate::ui::widgets::metric_card(&mut cols[2], "Total", self.data.total_general, C_DKBLUE);
+                let cards = [
+                    (self.config.pending_label.as_str(), self.data.total_pendientes, C_RED),
+                    (self.config.signed_label.as_str(), self.data.total_firmados, C_GREEN),
+                    ("Total", self.data.total_general, C_DKBLUE),
+                ];
+                ui.columns(cards.len(), |cols| {
+                    for (i, (label, value, color)) in cards.iter().enumerate() {
+                        crate::ui::widgets::metric_card(&mut cols[i], label, *value, *color);
+                    }
                 });
                 ui.separator();
 
@@ -487,14 +471,14 @@ impl eframe::App for App {
                     };
                     if let Some(ExportFormat::Pdf) = format {
                         if let Some(ref conn) = self.conn {
-                            let p = self.config.output_dir.join("dashboard.pdf");
+                            let p = self.config.output_dir.join(&self.config.default_pdf_name);
                             match crate::export::exportar_pdf_with_screenshot(conn, &self.filtros, &p, &self.vista, &self.config, &png_data) {
                                 Ok(path) => { let _ = open::that(path); }
                                 Err(e) => self.error = Some(e),
                             }
                         }
                     } else if let Some(ExportFormat::Pptx) = format {
-                        let p = self.config.output_dir.join("dashboard.pptx");
+                        let p = self.config.output_dir.join(&self.config.default_pptx_name);
                         match crate::export::exportar_pptx_with_screenshot(&p, &png_data, &self.config) {
                             Ok(path) => { let _ = open::that(path); }
                             Err(e) => self.error = Some(e),

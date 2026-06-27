@@ -1,4 +1,4 @@
-.PHONY: build release run clean combine
+.PHONY: build release run clean combine commit push github
 
 build:
 	cargo build
@@ -12,6 +12,15 @@ run:
 clean:
 	cargo clean
 	rm -f combined.txt
+
+commit:
+	git add -A
+	git commit -m "$(msg)"
+
+push:
+	git push
+
+github: commit push
 
 combine:
 	{ \

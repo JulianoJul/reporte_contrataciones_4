@@ -34,6 +34,47 @@ pub struct ColumnaInfo {
     pub col_nombre_catalogo: Option<String>,
 }
 
+impl ColumnaInfo {
+    pub fn to_filtro_info(&self) -> FiltroInfo {
+        let (tipo, valores) = match self.tipo.as_str() {
+            "categorical" => {
+                let vals = self.valores.as_ref().map(|v| {
+                    v.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()
+                });
+                ("categorical".to_string(), vals)
+            }
+            "categorical_fk" => {
+                let vals = self.valores.as_ref().map(|v| {
+                    v.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()
+                });
+                ("categorical_fk".to_string(), vals)
+            }
+            "date" => ("date".to_string(), None),
+            "numeric" => ("numeric".to_string(), None),
+            "text_search" => ("text_search".to_string(), None),
+            _ => return FiltroInfo {
+                nombre: self.nombre.clone(),
+                tipo: self.tipo.clone(),
+                valores: None, min: None, max: None,
+                fecha_min: None, fecha_max: None,
+                col_original: None, tabla_catalogo: None, col_nombre_catalogo: None,
+            },
+        };
+        FiltroInfo {
+            nombre: self.nombre.clone(),
+            tipo,
+            valores,
+            min: self.min,
+            max: self.max,
+            fecha_min: self.fecha_min.clone(),
+            fecha_max: self.fecha_max.clone(),
+            col_original: self.col_original.clone(),
+            tabla_catalogo: self.tabla_catalogo.clone(),
+            col_nombre_catalogo: self.col_nombre_catalogo.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DependenciaInfo {
     pub columna_padre: String,
