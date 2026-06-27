@@ -9,6 +9,10 @@ pub fn safe_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
+pub fn strip_fk_prefix(name: &str, prefix: &str) -> String {
+    name.strip_prefix(prefix).unwrap_or(name).to_string()
+}
+
 pub fn db_paths_in(data_dir: &Path) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
     if !data_dir.exists() {

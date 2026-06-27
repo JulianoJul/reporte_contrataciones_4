@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use crate::db::AnalyseConfig;
+use crate::db::constants;
 
 pub struct Config {
     pub default_db: Option<PathBuf>,
@@ -18,11 +19,11 @@ impl Config {
         let output_dir = project_root.join("output");
 
         let pending_pattern = std::env::var("PENDING_PATTERN")
-            .unwrap_or_else(|_| "PEND".to_string());
+            .unwrap_or_else(|_| constants::DEFAULT_PENDING_PATTERN.to_string());
         let pending_label = std::env::var("PENDING_LABEL")
             .unwrap_or_else(|_| "Pendientes".to_string());
         let signed_pattern = std::env::var("SIGNED_PATTERN")
-            .unwrap_or_else(|_| "FIRM".to_string());
+            .unwrap_or_else(|_| constants::DEFAULT_SIGNED_PATTERN.to_string());
         let signed_label = std::env::var("SIGNED_LABEL")
             .unwrap_or_else(|_| "Firmados".to_string());
 
@@ -58,6 +59,8 @@ impl Config {
                     .filter(|s| !s.is_empty())
                     .collect()
             },
+            fallback_pk_name: std::env::var("FALLBACK_PK_NAME")
+                .unwrap_or_else(|_| dflt.fallback_pk_name.clone()),
         };
 
         Config {

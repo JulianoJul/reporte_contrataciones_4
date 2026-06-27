@@ -14,6 +14,7 @@ pub const DEFAULT_PENDING_PATTERN: &str = "PEND";
 pub const DEFAULT_SIGNED_PATTERN: &str = "FIRM";
 pub const FILTRO_TODOS: &str = "__todos__";
 pub const DEFAULT_PAGE_SIZE: usize = 10;
+pub const DEFAULT_PK_FALLBACK: &str = "rowid";
 
 #[derive(Debug, Clone)]
 pub struct AnalyseConfig {
@@ -23,6 +24,7 @@ pub struct AnalyseConfig {
     pub exclude_id_prefix: String,
     pub exclude_name_cols: Vec<String>,
     pub view_keywords: Vec<String>,
+    pub fallback_pk_name: String,
 }
 
 impl Default for AnalyseConfig {
@@ -47,6 +49,7 @@ impl Default for AnalyseConfig {
                 "vw_".into(),
                 "vista".into(),
             ],
+            fallback_pk_name: DEFAULT_PK_FALLBACK.to_string(),
         }
     }
 }

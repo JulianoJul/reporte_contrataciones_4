@@ -5,7 +5,7 @@ use rusqlite::types::ToSql;
 use super::types::{DashboardData, FiltroValor, ModoOptimizacion};
 use super::constants;
 use super::utils::{clean_identifier, safe_ident};
-use super::schema::{obtener_columnas, detectar_pk_columna};
+use super::schema::{obtener_columnas, obtener_pk_con_fallback};
 use std::collections::HashMap;
 
 fn col_prefix(modo: Option<&ModoOptimizacion>) -> &'static str {
@@ -29,7 +29,7 @@ fn add_categorical_fk_filter(
         let cn = safe_ident(col_nombre);
         let co = format!("{}{}", p, safe_ident(col_original));
         let pk_col = pk_cache.entry(tabla_catalogo.to_string()).or_insert_with(|| {
-            conn.and_then(|c| detectar_pk_columna(c, tabla_catalogo).ok()).unwrap_or_else(|| "rowid".to_string())
+            conn.map(|c| obtener_pk_con_fallback(c, tabla_catalogo, constants::DEFAULT_PK_FALLBACK)).unwrap_or_else(|| constants::DEFAULT_PK_FALLBACK.to_string())
         });
         clauses.push(format!("{co} = (SELECT {pk_col} FROM {tc} WHERE {cn} = ?)"));
         params.push(Box::new(selected.to_string()));

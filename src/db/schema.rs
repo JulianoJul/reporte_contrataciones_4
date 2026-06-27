@@ -124,3 +124,7 @@ pub fn detectar_pk_columna(conn: &Connection, tabla: &str) -> SqlResult<String> 
         .map(|(name, _)| name.clone())
         .unwrap_or_else(|| "rowid".to_string()))
 }
+
+pub fn obtener_pk_con_fallback(conn: &Connection, tabla: &str, fallback: &str) -> String {
+    detectar_pk_columna(conn, tabla).unwrap_or_else(|_| fallback.to_string())
+}

@@ -5,8 +5,8 @@ use rusqlite::types::ToSql;
 use super::types::{ColumnaInfo, ColumnaRaw, FkInfo, DependenciaInfo};
 use super::constants;
 use super::constants::AnalyseConfig;
-use super::schema::detectar_pk_columna;
-use super::utils::{clean_identifier, safe_ident};
+use super::schema::obtener_pk_con_fallback;
+use super::utils::{clean_identifier, safe_ident, strip_fk_prefix};
 use std::collections::HashMap;
 
 pub fn analizar_columna(
@@ -34,7 +34,7 @@ pub fn analizar_columna(
                 .map(|v| serde_json::json!(v))
                 .collect();
             let total_dist = valores.len() as u64;
-            let nombre_display = col.name.strip_prefix(&ac.fk_id_prefix).unwrap_or(&col.name).to_string();
+            let nombre_display = strip_fk_prefix(&col.name, &ac.fk_id_prefix);
             return Ok(Some(ColumnaInfo {
                 nombre: nombre_display,
                 tipo: "categorical_fk".to_string(),
@@ -434,10 +434,7 @@ fn construir_mapeo_dependencia(
                 continue;
             }
             let tabla_rel = &fk_info_fk.tabla;
-            if !clean_identifier(tabla_rel) || !clean_identifier(pt) || !clean_identifier(ht) {
-                continue;
-            }
-            if !clean_identifier(col_padre) || !clean_identifier(col_hijo) {
+            if [tabla_rel, pt, ht, col_padre, col_hijo].iter().any(|s| !clean_identifier(s)) {
                 continue;
             }
 
@@ -447,12 +444,12 @@ fn construir_mapeo_dependencia(
             let sa = safe_ident(&fk_info_pk.tabla);
             let sb = safe_ident(&fk_info_fk.tabla);
             let pk_col_name = if fk_info_pk.columna.is_empty() {
-                detectar_pk_columna(conn, &fk_info_pk.tabla).unwrap_or_else(|_| "rowid".to_string())
+                obtener_pk_con_fallback(conn, &fk_info_pk.tabla, crate::db::constants::DEFAULT_PK_FALLBACK)
             } else {
                 fk_info_pk.columna.clone()
             };
             let fk_col_name = if fk_info_fk.columna.is_empty() {
-                detectar_pk_columna(conn, &fk_info_fk.tabla).unwrap_or_else(|_| "rowid".to_string())
+                obtener_pk_con_fallback(conn, &fk_info_fk.tabla, crate::db::constants::DEFAULT_PK_FALLBACK)
             } else {
                 fk_info_fk.columna.clone()
             };
