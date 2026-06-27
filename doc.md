@@ -557,3 +557,47 @@ reporte_contrataciones_4-v1.0.0-windows.zip/
 |---|-------|
 | B1 | Fallback `today` en widget date picker es interno de UI, no afecta lógica de negocio |
 | B2 | `unwrap_or("")` en split de FK keys es fallback de seguridad, ya hay comentario explicativo |
+
+---
+
+## Recomendación: Documentación para Opencode
+
+**Estrategia recomendada (orden de prioridad):**
+
+### 1. Local: `cargo doc` + Skills/Rules (recomendado)
+
+Crea reglas locales con fragmentos clave de la documentación de los crates que usas:
+
+```bash
+cargo doc --no-deps --open
+```
+
+Luego extrae los patrones esenciales (structs, traits, funciones que usas) a un archivo de regla en `.opencode/rules/<crate>-patterns.md`. Esto evita que Opencode invente APIs.
+
+**Para migrar egui 0.29 → 0.34**, crear `.opencode/rules/egui-migration.md` con los 5 breaking changes:
+- `App::update(&mut self, ctx, frame)` → `App::ui(&mut self, ui)`
+- `SidePanel`/`TopBottomPanel` → `Panel` unificado
+- `Context::style()` → `Context::global_style()`
+- `ui.ctx().input(…)` → `ui.input(…)`
+- `Context::run` → `Context::run_ui`
+
+### 2. Complemento: Playwright MCP (opcional)
+
+Para consultar firmas exactas en `docs.rs` durante la migración:
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp"]
+    }
+  }
+}
+```
+
+Permite a Opencode navegar `docs.rs/<crate>/<version>` al vuelo y leer la documentación oficial sin pre-indexar.
+
+### 3. Archon MCP (no recomendado para este proyecto)
+
+RAG con base vectorial. Overkill para ~3000 líneas y 18 archivos.

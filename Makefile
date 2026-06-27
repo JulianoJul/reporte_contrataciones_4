@@ -6,6 +6,12 @@ build:
 release:
 	cargo build --release
 
+release-win-gnu:
+	cargo build --target x86_64-pc-windows-gnu --release
+
+release-win-msvc:
+	cargo build --target x86_64-pc-windows-msvc --release
+
 run:
 	cargo run
 
