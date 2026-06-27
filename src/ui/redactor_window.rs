@@ -1,4 +1,5 @@
 use eframe::egui::{self, Context};
+use crate::db::utils::display_name;
 
 pub fn ui_redactor_window(app: &mut crate::app::App, ctx: &Context) {
     let mut open = app.redactor_open;
@@ -28,7 +29,7 @@ pub fn ui_redactor_window(app: &mut crate::app::App, ctx: &Context) {
                                 .data
                                 .columnas_tabla
                                 .iter()
-                                .map(|c| format!("#{}", c.replace('_', " ")))
+                                .map(|c| format!("#{}", display_name(&c)))
                                 .collect();
                             ui.label(labels.join(", "));
                         });

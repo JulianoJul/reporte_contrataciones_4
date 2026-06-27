@@ -1,4 +1,6 @@
 use std::path::Path;
+use chrono::NaiveDate;
+use crate::db::constants::DATE_FORMAT;
 
 pub fn clean_identifier(name: &str) -> bool {
     !name.is_empty()
@@ -11,6 +13,20 @@ pub fn safe_ident(name: &str) -> String {
 
 pub fn strip_fk_prefix(name: &str, prefix: &str) -> String {
     name.strip_prefix(prefix).unwrap_or(name).to_string()
+}
+
+pub fn safe_date_parse(date_str: &str, fallback: NaiveDate) -> NaiveDate {
+    match NaiveDate::parse_from_str(date_str, DATE_FORMAT) {
+        Ok(d) => d,
+        Err(_) => {
+            eprintln!("[utils] date parse failed for '{}', using fallback", date_str);
+            fallback
+        }
+    }
+}
+
+pub fn display_name(name: &str) -> String {
+    name.replace('_', " ")
 }
 
 pub fn db_paths_in(data_dir: &Path) -> Vec<std::path::PathBuf> {

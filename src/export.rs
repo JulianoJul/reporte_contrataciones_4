@@ -7,6 +7,18 @@ use crate::config::Config;
 use crate::db;
 use rusqlite::Connection;
 
+pub fn process_screenshot(img: &egui::ColorImage) -> Vec<u8> {
+    let w = img.width();
+    let h = img.height();
+    let raw: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+    let rgba = image::RgbaImage::from_raw(w as u32, h as u32, raw);
+    let mut buf = std::io::Cursor::new(Vec::new());
+    if let Some(rgba_img) = rgba {
+        let _ = rgba_img.write_to(&mut buf, image::ImageFormat::Png);
+    }
+    buf.into_inner()
+}
+
 fn ensure_dir(path: &Path) -> Result<(), String> {
     fs::create_dir_all(path).map_err(|e| format!("Error creando directorio: {}", e))
 }

@@ -4,6 +4,7 @@ use eframe::egui::{self, Context, Rounding, Stroke, Margin};
 
 use crate::db::{self, SchemaMetadata, FiltroValor, FiltroInfo, DashboardData, ModoOptimizacion, constants};
 use crate::db::analysis;
+use crate::db::utils::display_name;
 use crate::config::Config;
 use crate::redactor::Redactor;
 use crate::ui::charts::{self as chart_ui, ChartsData};
@@ -301,7 +302,7 @@ impl App {
                             ui.label(egui::RichText::new(format!("Mostrando: {}", self.data.tabla.len())).color(C_GREY));
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(&self.vista.replace('_', " ")).color(C_DKBLUE));
+                            ui.label(egui::RichText::new(&display_name(&self.vista)).color(C_DKBLUE));
                         });
                     } else {
                         ui.label(egui::RichText::new("Sin base de datos abierta").color(C_GREY));
@@ -359,10 +360,10 @@ impl App {
                     let prev = self.vista.clone();
                     egui::ComboBox::from_id_salt("tabla_selector")
                         .width(250.0)
-                        .selected_text(if self.vista.is_empty() { "—".to_string() } else { self.vista.replace('_', " ") })
+                        .selected_text(if self.vista.is_empty() { "—".to_string() } else { display_name(&self.vista) })
                         .show_ui(ui, |ui| {
                             for t in &self.tablas_disponibles {
-                                ui.selectable_value(&mut self.vista, t.clone(), t.replace('_', " "));
+                                ui.selectable_value(&mut self.vista, t.clone(), display_name(t));
                             }
                         });
                     if prev != self.vista { self.seleccionar_tabla(self.vista.clone()); }
@@ -395,11 +396,11 @@ impl App {
                     ui.label("Agrupar por:");
                     let prev = self.group_by.clone();
                     egui::ComboBox::from_id_salt("group_by")
-                        .selected_text(if self.group_by.is_empty() { "Ninguno".to_string() } else { self.group_by.replace('_', " ") })
+                        .selected_text(if self.group_by.is_empty() { "Ninguno".to_string() } else { display_name(&self.group_by) })
                         .show_ui(ui, |ui| {
                             ui.selectable_value(&mut self.group_by, String::new(), "Ninguno");
                             for col in &self.data.columnas_tabla {
-                                ui.selectable_value(&mut self.group_by, col.clone(), col.replace('_', " "));
+                                ui.selectable_value(&mut self.group_by, col.clone(), display_name(&col));
                             }
                         });
                     if prev != self.group_by { self.needs_refresh = true; }
@@ -457,18 +458,7 @@ impl eframe::App for App {
             for event in &events {
                 if let egui::Event::Screenshot { image, .. } = event {
                     let format = self.pending_export.take();
-                    let img = image.as_ref().clone();
-                    let w = img.width();
-                    let h = img.height();
-                    let raw: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
-                    let png_data = {
-                        let rgba = image::RgbaImage::from_raw(w as u32, h as u32, raw);
-                        let mut buf = std::io::Cursor::new(Vec::new());
-                        if let Some(rgba_img) = rgba {
-                            let _ = rgba_img.write_to(&mut buf, image::ImageFormat::Png);
-                        }
-                        buf.into_inner()
-                    };
+                    let png_data = crate::export::process_screenshot(image.as_ref());
                     if let Some(ExportFormat::Pdf) = format {
                         if let Some(ref conn) = self.conn {
                             let p = self.config.output_dir.join(&self.config.default_pdf_name);

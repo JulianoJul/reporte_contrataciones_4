@@ -25,6 +25,9 @@ pub const STATUS_BOTH_MULTIPLIER: f64 = 2.0;
 pub const STATUS_COVERAGE_MULTIPLIER: f64 = 0.3;
 pub const FK_KEY_SEPARATOR: &str = ".";
 pub const FK_ALIAS_PREFIX: &str = "c_";
+pub const DEFAULT_EXCEL_NAME: &str = "reporte.xlsx";
+pub const DEFAULT_PDF_NAME: &str = "dashboard.pdf";
+pub const DEFAULT_PPTX_NAME: &str = "dashboard.pptx";
 
 #[derive(Debug, Clone)]
 pub struct AnalyseConfig {

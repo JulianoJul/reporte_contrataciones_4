@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use eframe::egui::{self, Color32, Stroke, Shape};
 
+use crate::db::utils::display_name;
 use crate::ui::theme::{C_MUTED, C_TEXT, C_BG, C_GREY, nord_colors};
 
 
@@ -27,7 +28,7 @@ pub fn bar_chart_view(ui: &mut egui::Ui, data: &HashMap<String, u64>, _title: &s
         .iter()
         .enumerate()
         .map(|(i, (label, count))| {
-            let display = label.replace('_', " ");
+            let display = display_name(label);
             Bar::new(i as f64, *count as f64)
                 .name(format!("{}: {}", display, count))
                 .width(0.7)
@@ -125,7 +126,7 @@ pub fn pie_chart_view(ui: &mut egui::Ui, data: &HashMap<String, u64>, _title: &s
         painter.text(
             egui::pos2(legend_rect.left() + 16.0, ly + 7.0),
             egui::Align2::LEFT_CENTER,
-            format!("{}: {}", label.replace('_', " "), count),
+            format!("{}: {}", display_name(label), count),
             egui::FontId::proportional(11.0),
             C_TEXT,
         );

@@ -1,6 +1,7 @@
 use eframe::egui::{self, Context, Margin, Rounding, Stroke};
 use crate::db::FiltroValor;
 use crate::db::constants::FILTRO_TODOS;
+use crate::db::utils::display_name;
 use crate::ui::theme::C_BG;
 use crate::ui::widgets::{date_picker_widget, hoy_button};
 
@@ -35,7 +36,7 @@ pub fn ui_sidebar(app: &mut crate::app::App, ctx: &Context) {
             egui::ScrollArea::vertical().id_salt("sidebar_scroll").show(ui, |ui| {
                 for fi in &app.filtros_info {
                     let nombre = &fi.nombre;
-                    let display = nombre.replace('_', " ");
+                    let display = display_name(&nombre);
                     if let Some(valor) = app.filtros.get_mut(nombre) {
                         match valor {
                             FiltroValor::Categorical { selected } |

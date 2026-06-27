@@ -2,11 +2,8 @@ use eframe::egui::{self, Color32, Rounding, Stroke, PopupCloseBehavior};
 use chrono::{NaiveDate, Datelike, Local, Duration};
 
 use crate::db::constants::{DATE_FORMAT, DATE_FORMAT_HINT};
+use crate::db::utils::safe_date_parse;
 use crate::ui::theme::{C_SURF, C_MUTED, C_GREY, C_BG};
-
-fn safe_date_parse(date_str: &str, fallback: NaiveDate) -> NaiveDate {
-    NaiveDate::parse_from_str(date_str, DATE_FORMAT).unwrap_or(fallback)
-}
 
 pub fn metric_card(ui: &mut egui::Ui, title: &str, value: u64, accent: Color32) {
     let height = 64.0;

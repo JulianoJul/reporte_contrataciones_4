@@ -13,7 +13,7 @@ pub struct PdfConfig {
 impl Default for PdfConfig {
     fn default() -> Self {
         Self {
-            title: "Dashboard de Contrataciones".to_string(),
+            title: String::new(),
             page_w_mm: 297.0,
             page_h_mm: 210.0,
             image_w_mm: 277.0,
@@ -121,10 +121,13 @@ impl Config {
             signed_label,
             analyse,
             pdf: PdfConfig { title: pdf_title, ..PdfConfig::default() },
-            pptx: PptxConfig::default(),
-            default_excel_name: std::env::var("DEFAULT_EXCEL_NAME").unwrap_or_else(|_| "reporte.xlsx".to_string()),
-            default_pdf_name: std::env::var("DEFAULT_PDF_NAME").unwrap_or_else(|_| "dashboard.pdf".to_string()),
-            default_pptx_name: std::env::var("DEFAULT_PPTX_NAME").unwrap_or_else(|_| "dashboard.pptx".to_string()),
+            pptx: PptxConfig {
+                image_w_emu: std::env::var("PPTX_IMAGE_W_EMU").ok().and_then(|s| s.parse().ok()).unwrap_or(9_144_000),
+                image_h_emu: std::env::var("PPTX_IMAGE_H_EMU").ok().and_then(|s| s.parse().ok()).unwrap_or(6_858_000),
+            },
+            default_excel_name: std::env::var("DEFAULT_EXCEL_NAME").unwrap_or_else(|_| constants::DEFAULT_EXCEL_NAME.to_string()),
+            default_pdf_name: std::env::var("DEFAULT_PDF_NAME").unwrap_or_else(|_| constants::DEFAULT_PDF_NAME.to_string()),
+            default_pptx_name: std::env::var("DEFAULT_PPTX_NAME").unwrap_or_else(|_| constants::DEFAULT_PPTX_NAME.to_string()),
         }
     }
 }

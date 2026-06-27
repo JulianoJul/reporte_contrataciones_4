@@ -1,8 +1,5 @@
 use crate::db::{DashboardData, SchemaMetadata};
-
-fn limpiar_nombre(n: &str) -> String {
-    n.replace('_', " ")
-}
+use crate::db::utils::display_name;
 
 pub struct Redactor {
     pub template: String,
@@ -32,7 +29,7 @@ impl Redactor {
         let display_cols: Vec<(String, String)> = meta
             .columnas
             .iter()
-            .map(|c| (c.nombre.clone(), limpiar_nombre(&c.nombre)))
+            .map(|c| (c.nombre.clone(), display_name(&c.nombre)))
             .collect();
 
         for (col_name, display_name) in &display_cols {

@@ -1,5 +1,6 @@
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
+use crate::db::utils::display_name;
 
 pub fn ui_tabla(app: &mut crate::app::App, ui: &mut egui::Ui) {
     let col_names = app.data.columnas_tabla.clone();
@@ -24,7 +25,7 @@ pub fn ui_tabla(app: &mut crate::app::App, ui: &mut egui::Ui) {
             .header(22.0, |mut header| {
                 for col in &col_names {
                     header.col(|ui| {
-                        ui.strong(col.replace('_', " "));
+                        ui.strong(display_name(&col));
                     });
                 }
             })
