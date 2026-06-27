@@ -533,3 +533,27 @@ reporte_contrataciones_4-v1.0.0-windows.zip/
 | `promptqwencoder.txt` | **Eliminado** | Reemplazado por `prompt` (formato más limpio) |
 | `prompt` | **Creado** | Prompt unificado para Qwen, instrucciones de solo leer `combined.txt` + `data/Tablas3.sql` |
 | `.gitignore` | `combined.txt` removido | Se trackea en git para que Qwen lo encuentre sin generar |
+
+---
+
+## Fixes Cuarta Auditoría Qwen (Junio 2026) ✓
+
+### 🟡 Prioridad Media
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| M1 | `db/constants.rs` + `config.rs` | Valores EMU `9_144_000` / `6_858_000` movidos a constantes `DEFAULT_PPTX_IMAGE_W_EMU` / `DEFAULT_PPTX_IMAGE_H_EMU` | Eliminar hardcodeo residual: valores inline en `unwrap_or()` ahora referencian constantes |
+
+### 🟢 Prioridad Baja
+
+| # | Archivo | Cambio | Razón |
+|---|---------|--------|-------|
+| #1 | `db/utils.rs` + `export.rs` + `redactor.rs` | Nuevo helper `json_value_to_string(&Value) -> String` reemplaza 2 ocurrencias de `and_then(\|v\| v.as_str()...)` | DRY: patrón JSON→string duplicado en exportación y redactor |
+| — | `prompt` | Agregadas reglas del proceso para opencode (leer plan_modificaciones.md, implementar uno por uno, build + doc + github) | Claridad del proceso post-auditoría |
+
+### Sin Acción (wontfix)
+
+| # | Razón |
+|---|-------|
+| B1 | Fallback `today` en widget date picker es interno de UI, no afecta lógica de negocio |
+| B2 | `unwrap_or("")` en split de FK keys es fallback de seguridad, ya hay comentario explicativo |

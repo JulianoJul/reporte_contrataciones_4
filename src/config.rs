@@ -122,8 +122,8 @@ impl Config {
             analyse,
             pdf: PdfConfig { title: pdf_title, ..PdfConfig::default() },
             pptx: PptxConfig {
-                image_w_emu: std::env::var("PPTX_IMAGE_W_EMU").ok().and_then(|s| s.parse().ok()).unwrap_or(9_144_000),
-                image_h_emu: std::env::var("PPTX_IMAGE_H_EMU").ok().and_then(|s| s.parse().ok()).unwrap_or(6_858_000),
+                image_w_emu: std::env::var("PPTX_IMAGE_W_EMU").ok().and_then(|s| s.parse().ok()).unwrap_or(constants::DEFAULT_PPTX_IMAGE_W_EMU),
+                image_h_emu: std::env::var("PPTX_IMAGE_H_EMU").ok().and_then(|s| s.parse().ok()).unwrap_or(constants::DEFAULT_PPTX_IMAGE_H_EMU),
             },
             default_excel_name: std::env::var("DEFAULT_EXCEL_NAME").unwrap_or_else(|_| constants::DEFAULT_EXCEL_NAME.to_string()),
             default_pdf_name: std::env::var("DEFAULT_PDF_NAME").unwrap_or_else(|_| constants::DEFAULT_PDF_NAME.to_string()),

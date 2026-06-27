@@ -28,6 +28,8 @@ pub const FK_ALIAS_PREFIX: &str = "c_";
 pub const DEFAULT_EXCEL_NAME: &str = "reporte.xlsx";
 pub const DEFAULT_PDF_NAME: &str = "dashboard.pdf";
 pub const DEFAULT_PPTX_NAME: &str = "dashboard.pptx";
+pub const DEFAULT_PPTX_IMAGE_W_EMU: i64 = 9_144_000;
+pub const DEFAULT_PPTX_IMAGE_H_EMU: i64 = 6_858_000;
 
 #[derive(Debug, Clone)]
 pub struct AnalyseConfig {
