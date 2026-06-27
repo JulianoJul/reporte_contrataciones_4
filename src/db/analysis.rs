@@ -259,10 +259,8 @@ pub fn detectar_columna_estado(
     let mut best_col: Option<String> = None;
     let mut best_score = 0.0;
 
-    let pend_esc = pending_pattern.replace('\'', "''").to_uppercase();
-    let firm_esc = signed_pattern.replace('\'', "''").to_uppercase();
-    let pend_like = format!("%{}%", pend_esc);
-    let firm_like = format!("%{}%", firm_esc);
+    let pend_like = format!("%{}%", pending_pattern.to_uppercase());
+    let firm_like = format!("%{}%", signed_pattern.to_uppercase());
 
     for col in col_names {
         if !clean_identifier(col) {
@@ -327,19 +325,18 @@ pub fn detectar_columna_estado(
         let status_combined = pend_ratio + firm_ratio;
         let both_statuses = pend_ratio > constants::STATUS_THRESHOLD && firm_ratio > constants::STATUS_THRESHOLD;
 
-        let score = if distinct_ratio < 0.3
-            && distinct_count >= 2 && distinct_count <= 10
+        let score = if distinct_ratio < constants::STATUS_DISTINCT_RATIO_THRESHOLD
+            && distinct_count >= constants::STATUS_MIN_DISTINCT && distinct_count <= constants::STATUS_MAX_DISTINCT
             && short_ratio > constants::STATUS_SHORT_RATIO_THRESHOLD
         {
-            let base = 0.5;
             if status_combined > constants::STATUS_COMBINED_THRESHOLD {
-                base + status_combined * if both_statuses { 2.0 } else { 1.0 }
+                constants::STATUS_SCORE_BASE + status_combined * if both_statuses { constants::STATUS_BOTH_MULTIPLIER } else { 1.0 }
             } else {
                 let coverage = (distinct_count as f64) / total_count.min(distinct_count * 100) as f64;
-                base + coverage * 0.3
+                constants::STATUS_SCORE_BASE + coverage * constants::STATUS_COVERAGE_MULTIPLIER
             }
         } else if status_combined > constants::STATUS_COMBINED_THRESHOLD {
-            status_combined * if both_statuses { 2.0 } else { 1.0 }
+            status_combined * if both_statuses { constants::STATUS_BOTH_MULTIPLIER } else { 1.0 }
         } else {
             continue;
         };

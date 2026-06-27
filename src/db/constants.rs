@@ -15,6 +15,14 @@ pub const DEFAULT_SIGNED_PATTERN: &str = "FIRM";
 pub const FILTRO_TODOS: &str = "__todos__";
 pub const DEFAULT_PAGE_SIZE: usize = 10;
 pub const DEFAULT_PK_FALLBACK: &str = "rowid";
+pub const DATE_FORMAT: &str = "%d/%m/%Y";
+pub const DATE_FORMAT_HINT: &str = "DD/MM/AAAA";
+pub const STATUS_DISTINCT_RATIO_THRESHOLD: f64 = 0.3;
+pub const STATUS_MIN_DISTINCT: i64 = 2;
+pub const STATUS_MAX_DISTINCT: i64 = 10;
+pub const STATUS_SCORE_BASE: f64 = 0.5;
+pub const STATUS_BOTH_MULTIPLIER: f64 = 2.0;
+pub const STATUS_COVERAGE_MULTIPLIER: f64 = 0.3;
 
 #[derive(Debug, Clone)]
 pub struct AnalyseConfig {
